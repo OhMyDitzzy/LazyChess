@@ -141,8 +141,9 @@ pub fn moves_to_pgn(
     pgn
 }
 
+type ParsedPgnResult = ChessResult<(Vec<(String, String)>, Vec<String>)>;
 /// Parses a PGN string and returns the tag pairs and a list of UCI move strings.
-pub fn parse_pgn(pgn: &str) -> ChessResult<(Vec<(String, String)>, Vec<String>)> {
+pub fn parse_pgn(pgn: &str) -> ParsedPgnResult {
     let mut tags = Vec::new();
     let mut moves = Vec::new();
 

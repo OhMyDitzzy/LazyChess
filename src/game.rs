@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::board::Board;
 use crate::fen::{board_to_fen, parse_fen};
 use crate::movegen::{apply_move, generate_legal_moves, is_in_check};
-use crate::opening::{OpeningBook, BUILTIN_OPENINGS_JSON};
+use crate::opening::{BUILTIN_OPENINGS_JSON, OpeningBook};
 use crate::pgn::{move_to_san, moves_to_pgn, parse_pgn, pgn_moves_to_uci};
 use crate::types::*;
 
@@ -290,14 +290,13 @@ impl Game {
             && bm == 1
             && white_pieces.contains(&PieceType::Bishop)
             && black_pieces.contains(&PieceType::Bishop)
+            && let (Some(wsq), Some(bsq)) = (white_bishop_sq, black_bishop_sq)
         {
-            if let (Some(wsq), Some(bsq)) = (white_bishop_sq, black_bishop_sq) {
-                // Squares of the same colour share the parity of (rank + file).
-                let w_parity = (rank_of(wsq) + file_of(wsq)) % 2;
-                let b_parity = (rank_of(bsq) + file_of(bsq)) % 2;
-                if w_parity == b_parity {
-                    return true;
-                }
+            // Squares of the same colour share the parity of (rank + file).
+            let w_parity = (rank_of(wsq) + file_of(wsq)) % 2;
+            let b_parity = (rank_of(bsq) + file_of(bsq)) % 2;
+            if w_parity == b_parity {
+                return true;
             }
         }
 
@@ -379,9 +378,9 @@ impl Game {
     /// Index `[rank][file]`, rank 0 = rank 1 (White's back rank).
     pub fn board(&self) -> [[Option<Piece>; 8]; 8] {
         let mut arr = [[None; 8]; 8];
-        for rank in 0..8 {
-            for file in 0..8 {
-                arr[rank][file] = self.board.squares[rank * 8 + file];
+        for (rank, row) in arr.iter_mut().enumerate() {
+            for (file, square) in row.iter_mut().enumerate() {
+                *square = self.board.squares[rank * 8 + file];
             }
         }
         arr
@@ -423,7 +422,7 @@ impl Game {
     pub fn square_color(sq: &str) -> ChessResult<&'static str> {
         let s =
             parse_square(sq).ok_or_else(|| ChessError::new(format!("Invalid square: '{sq}'")))?;
-        let color = if (rank_of(s) + file_of(s)) % 2 == 0 {
+        let color = if (rank_of(s) + file_of(s)).is_multiple_of(2) {
             "dark"
         } else {
             "light"

@@ -17,7 +17,7 @@ const ROOK_DIRS: [(i32, i32); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
 
 #[inline(always)]
 fn to_sq(rank: i32, file: i32) -> Option<Square> {
-    if rank >= 0 && rank < 8 && file >= 0 && file < 8 {
+    if (0..8).contains(&rank) && (0..8).contains(&file) {
         Some((rank * 8 + file) as Square)
     } else {
         None
@@ -32,8 +32,8 @@ fn to_sq(rank: i32, file: i32) -> Option<Square> {
 pub fn generate_pseudo_legal_moves(board: &Board) -> Vec<Move> {
     let mut moves: Vec<Move> = Vec::with_capacity(48);
     for sq in 0u8..64 {
-        if let Some(p) = board.piece_at(sq) {
-            if p.color == board.side_to_move {
+        if let Some(p) = board.piece_at(sq)
+            && p.color == board.side_to_move {
                 match p.piece_type {
                     PieceType::Pawn => gen_pawn_moves(board, sq, &mut moves),
                     PieceType::Knight => gen_knight_moves(board, sq, &mut moves),
@@ -46,7 +46,6 @@ pub fn generate_pseudo_legal_moves(board: &Board) -> Vec<Move> {
                     PieceType::King => gen_king_moves(board, sq, &mut moves),
                 }
             }
-        }
     }
     moves
 }
@@ -65,24 +64,21 @@ fn gen_pawn_moves(board: &Board, from: Square, moves: &mut Vec<Move>) {
     let target_rank = rank + dir;
 
     // Single-square push
-    if let Some(to) = to_sq(target_rank, file) {
-        if board.piece_at(to).is_none() {
+    if let Some(to) = to_sq(target_rank, file)
+        && board.piece_at(to).is_none() {
             if rank == promo_rank {
                 push_promotions(from, to, moves);
             } else {
                 moves.push(Move::new(from, to));
 
                 // Double push from the starting rank
-                if rank == start_rank {
-                    if let Some(to2) = to_sq(rank + 2 * dir, file) {
-                        if board.piece_at(to2).is_none() {
+                if rank == start_rank
+                    && let Some(to2) = to_sq(rank + 2 * dir, file)
+                        && board.piece_at(to2).is_none() {
                             moves.push(Move::with_flag(from, to2, MoveFlag::DoublePawnPush));
                         }
-                    }
-                }
             }
         }
-    }
 
     // Diagonal captures (including en passant)
     for &df in &[-1i32, 1i32] {
@@ -125,11 +121,10 @@ fn gen_knight_moves(board: &Board, from: Square, moves: &mut Vec<Move>) {
     let file = file_of(from) as i32;
 
     for &(dr, df) in &KNIGHT_DIRS {
-        if let Some(to) = to_sq(rank + dr, file + df) {
-            if board.piece_at(to).map(|p| p.color != color).unwrap_or(true) {
+        if let Some(to) = to_sq(rank + dr, file + df)
+            && board.piece_at(to).map(|p| p.color != color).unwrap_or(true) {
                 moves.push(Move::new(from, to));
             }
-        }
     }
 }
 
@@ -140,7 +135,7 @@ fn gen_sliding(board: &Board, from: Square, dirs: &[(i32, i32)], moves: &mut Vec
 
     for &(dr, df) in dirs {
         let (mut r, mut f) = (rank + dr, file + df);
-        while r >= 0 && r < 8 && f >= 0 && f < 8 {
+        while (0..8).contains(&r) && (0..8).contains(&f) {
             let to = (r * 8 + f) as Square;
             match board.piece_at(to) {
                 None => moves.push(Move::new(from, to)),
@@ -163,11 +158,10 @@ fn gen_king_moves(board: &Board, from: Square, moves: &mut Vec<Move>) {
     let file = file_of(from) as i32;
 
     for &(dr, df) in &KING_DIRS {
-        if let Some(to) = to_sq(rank + dr, file + df) {
-            if board.piece_at(to).map(|p| p.color != color).unwrap_or(true) {
+        if let Some(to) = to_sq(rank + dr, file + df)
+            && board.piece_at(to).map(|p| p.color != color).unwrap_or(true) {
                 moves.push(Move::new(from, to));
             }
-        }
     }
 
     gen_castling(board, from, color, moves);
@@ -221,30 +215,28 @@ pub fn is_square_attacked(board: &Board, sq: Square, by_color: Color) -> bool {
 
     // Knight attacks
     for &(dr, df) in &KNIGHT_DIRS {
-        if let Some(from) = to_sq(rank + dr, file + df) {
-            if matches!(board.piece_at(from),
+        if let Some(from) = to_sq(rank + dr, file + df)
+            && matches!(board.piece_at(from),
                 Some(Piece { piece_type: PieceType::Knight, color }) if color == by_color)
             {
                 return true;
             }
-        }
     }
 
     // King attacks (needed to prevent the king from walking into an adjacent king)
     for &(dr, df) in &KING_DIRS {
-        if let Some(from) = to_sq(rank + dr, file + df) {
-            if matches!(board.piece_at(from),
+        if let Some(from) = to_sq(rank + dr, file + df)
+            && matches!(board.piece_at(from),
                 Some(Piece { piece_type: PieceType::King, color }) if color == by_color)
             {
                 return true;
             }
-        }
     }
 
     // Diagonal sliders (Bishop / Queen)
     for &(dr, df) in &BISHOP_DIRS {
         let (mut r, mut f) = (rank + dr, file + df);
-        while r >= 0 && r < 8 && f >= 0 && f < 8 {
+        while (0..8).contains(&r) && (0..8).contains(&f) {
             if let Some(p) = board.piece_at((r * 8 + f) as Square) {
                 if p.color == by_color
                     && (p.piece_type == PieceType::Bishop
@@ -262,7 +254,7 @@ pub fn is_square_attacked(board: &Board, sq: Square, by_color: Color) -> bool {
     // Straight sliders (Rook / Queen)
     for &(dr, df) in &ROOK_DIRS {
         let (mut r, mut f) = (rank + dr, file + df);
-        while r >= 0 && r < 8 && f >= 0 && f < 8 {
+        while (0..8).contains(&r) && (0..8).contains(&f) {
             if let Some(p) = board.piece_at((r * 8 + f) as Square) {
                 if p.color == by_color
                     && (p.piece_type == PieceType::Rook || p.piece_type == PieceType::Queen)
@@ -283,13 +275,12 @@ pub fn is_square_attacked(board: &Board, sq: Square, by_color: Color) -> bool {
         Color::Black => 1,
     };
     for &df in &[-1i32, 1i32] {
-        if let Some(from) = to_sq(rank + pawn_dir, file + df) {
-            if matches!(board.piece_at(from),
+        if let Some(from) = to_sq(rank + pawn_dir, file + df)
+            && matches!(board.piece_at(from),
                 Some(Piece { piece_type: PieceType::Pawn, color }) if color == by_color)
             {
                 return true;
             }
-        }
     }
 
     false

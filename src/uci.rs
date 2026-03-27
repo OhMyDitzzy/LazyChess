@@ -633,11 +633,10 @@ impl UciEngine {
                         self.info.name = Some(rest.to_owned());
                     } else if let Some(rest) = trimmed.strip_prefix("id author ") {
                         self.info.author = Some(rest.to_owned());
-                    } else if trimmed.starts_with("option ") {
-                        if let Some(opt) = parse_option_line(trimmed) {
+                    } else if trimmed.starts_with("option ")
+                        && let Some(opt) = parse_option_line(trimmed) {
                             self.info.options.push(opt);
                         }
-                    }
                 }
                 None => return Err(UciError::ProcessDied),
             }
@@ -668,11 +667,10 @@ impl UciEngine {
                             ));
                         }
                         return Ok((best, infos));
-                    } else if trimmed.starts_with("info ") {
-                        if let Some(info) = parse_info_line(trimmed) {
+                    } else if trimmed.starts_with("info ")
+                        && let Some(info) = parse_info_line(trimmed) {
                             infos.push(info);
                         }
-                    }
                 }
                 None => return Err(UciError::ProcessDied),
             }
@@ -790,21 +788,19 @@ fn parse_info_line(line: &str) -> Option<AnalysisInfo> {
                 info.hashfull = words.next().and_then(|w| w.parse().ok());
             }
             "score" => {
-                if let Some(kind) = words.next() {
-                    if let Some(val) = words.next().and_then(|w| w.parse::<i32>().ok()) {
+                if let Some(kind) = words.next()
+                    && let Some(val) = words.next().and_then(|w| w.parse::<i32>().ok()) {
                         info.score = Some(match kind {
                             "cp" => Score::Centipawns(val),
                             "mate" => Score::Mate(val),
                             _ => continue,
                         });
                         // Consume optional "lowerbound" / "upperbound" tokens.
-                        if let Some(&next) = words.peek() {
-                            if next == "lowerbound" || next == "upperbound" {
+                        if let Some(&next) = words.peek()
+                            && (next == "lowerbound" || next == "upperbound") {
                                 words.next();
                             }
-                        }
                     }
-                }
             }
             "pv" => {
                 // All remaining tokens belong to the PV.
