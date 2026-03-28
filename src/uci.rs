@@ -123,6 +123,8 @@ pub struct AnalysisInfo {
     pub hashfull: Option<u32>,
     /// Multi-PV line index (1-based).
     pub multipv: Option<u32>,
+    /// Free-text message from `info string …` lines (e.g. NNUE file name).
+    pub message: Option<String>,
 }
 
 impl AnalysisInfo {
@@ -137,12 +139,17 @@ impl AnalysisInfo {
             time_ms: None,
             hashfull: None,
             multipv: None,
+            message: None,
         }
     }
 }
 
 impl fmt::Display for AnalysisInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Pure text message lines (info string …) — print as-is.
+        if let Some(ref msg) = self.message {
+            return write!(f, "[engine] {msg}");
+        }
         if let Some(mpv) = self.multipv {
             write!(f, "[pv {mpv}] ")?;
         }
@@ -157,6 +164,40 @@ impl fmt::Display for AnalysisInfo {
         }
         Ok(())
     }
+}
+
+/// The result of a [`UciEngine::play`] call.
+///
+/// Contains the engine's chosen move and, if the engine provided one, a
+/// suggestion for which opponent move to ponder on next. Pass `ponder_move`
+/// directly to [`UciEngine::ponder`] to start background thinking.
+///
+/// # Example
+/// ```rust,no_run
+/// use lazychess::{Game, uci::{UciEngine, SearchConfig}};
+///
+/// let mut engine = UciEngine::new("/usr/bin/stockfish").unwrap();
+/// let mut game = Game::new();
+///
+/// let config = SearchConfig::depth(15);
+///
+/// // Engine plays and suggests a ponder move.
+/// let result = engine.play(&game, &config).unwrap();
+/// game.do_move(&result.best_move).unwrap();
+///
+/// // Use the same config so the ponder search has the same depth limit.
+/// if let Some(ref pm) = result.ponder_move {
+///     engine.sync_game(&game).unwrap();
+///     engine.ponder(pm, &config).unwrap(); // think while opponent decides
+/// }
+/// ```
+#[derive(Debug, Clone)]
+pub struct PlayResult {
+    /// The best move chosen by the engine (UCI notation, e.g. `"e2e4"`).
+    pub best_move: String,
+    /// The move the engine suggests pondering on next (opponent's expected
+    /// reply). `None` if the engine did not provide a ponder suggestion.
+    pub ponder_move: Option<String>,
 }
 
 /// Parameters that control the engine's search.
@@ -198,6 +239,17 @@ pub struct SearchConfig {
     pub multipv: Option<u32>,
     /// Search until [`UciEngine::stop`] is called.
     pub infinite: bool,
+    /// Per-search read timeout (ms). Overrides the engine's global timeout
+    /// for this search only. Useful for long searches (depth 25+) that would
+    /// otherwise trip the default 10 s timeout.
+    pub read_timeout_ms: Option<u64>,
+    /// The move the engine should ponder on (opponent's expected reply).
+    ///
+    /// When set, the `go` command is sent as `go ponder …` and the engine
+    /// searches the position after this move in the background. Call
+    /// [`UciEngine::ponderhit`] if the opponent plays this move, or
+    /// [`UciEngine::ponder_miss`] to abort and search from scratch.
+    pub ponder_move: Option<String>,
 }
 
 impl SearchConfig {
@@ -225,6 +277,16 @@ impl SearchConfig {
     /// newline).
     fn to_go_command(&self) -> String {
         let mut cmd = String::from("go");
+
+        // Ponder mode: append "ponder" flag, then fall through to add any
+        // time-control / depth limits so the engine knows when to stop after
+        // a ponderhit (e.g. `go ponder depth 15` or `go ponder wtime 60000 …`).
+        // Without at least one limit the search is infinite and ponderhit()
+        // will never receive a bestmove response.
+        if self.ponder_move.is_some() {
+            cmd.push_str(" ponder");
+            // Fall through — do NOT early-return here.
+        }
 
         if self.infinite {
             cmd.push_str(" infinite");
@@ -271,6 +333,14 @@ impl SearchConfigBuilder {
     pub fn infinite(mut self) -> Self { self.0.infinite = true; self }
     pub fn searchmoves(mut self, moves: Vec<String>) -> Self {
         self.0.searchmoves = moves; self
+    }
+    /// Override the engine's global read timeout for this search only (ms).
+    pub fn read_timeout_ms(mut self, ms: u64) -> Self {
+        self.0.read_timeout_ms = Some(ms); self
+    }
+    /// Set the move to ponder on (opponent's expected reply in UCI notation).
+    pub fn ponder_move(mut self, mv: impl Into<String>) -> Self {
+        self.0.ponder_move = Some(mv.into()); self
     }
     pub fn build(self) -> SearchConfig { self.0 }
 }
@@ -341,6 +411,10 @@ pub struct UciEngine {
     current_fen: Option<String>,
     /// Default timeout for blocking reads (milliseconds).
     timeout_ms: u64,
+    /// Whether the engine is currently in a ponder search.
+    is_pondering: bool,
+    /// The move currently being pondered, if any.
+    ponder_move: Option<String>,
 }
 
 impl UciEngine {
@@ -383,6 +457,8 @@ impl UciEngine {
             info: EngineInfo::default(),
             current_fen: None,
             timeout_ms: 10_000,
+            is_pondering: false,
+            ponder_move: None,
         };
 
         // Perform the UCI handshake.
@@ -395,7 +471,7 @@ impl UciEngine {
 
         Ok(engine)
     }
-
+    
     /// Overrides the default read timeout (milliseconds, default 10 000).
     pub fn set_timeout(&mut self, ms: u64) {
         self.timeout_ms = ms;
@@ -447,8 +523,129 @@ impl UciEngine {
         }
 
         self.send(&config.to_go_command())?;
-        let (best, _) = self.wait_for_bestmove()?;
+        let timeout = config.read_timeout_ms.unwrap_or(self.timeout_ms);
+        let (best, _, _) = self.wait_for_bestmove_with_timeout(timeout)?;
         Ok(best)
+    }
+
+    /// Starts a ponder search in the background using the given search limits.
+    ///
+    /// The engine searches the position after `ponder_move` (the opponent's
+    /// expected reply) in the background. Providing a `config` with `depth` or
+    /// `movetime` is strongly recommended — without a limit the engine searches
+    /// infinitely and [`ponderhit`] must send `stop` before it can retrieve a
+    /// result, which adds latency. With a bounded config (e.g. `depth(16)`) the
+    /// engine will stop on its own and [`ponderhit`] returns almost instantly.
+    ///
+    /// Call [`ponderhit`] if the opponent plays this move, or [`ponder_miss`]
+    /// to abort and search from scratch.
+    ///
+    /// The current position must already be set via [`sync_game`] or
+    /// [`set_position_fen`] **before** calling this method — the ponder move
+    /// is appended automatically.
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// use lazychess::{Game, uci::{UciEngine, SearchConfig}};
+    ///
+    /// let mut engine = UciEngine::new("/usr/bin/stockfish").unwrap();
+    /// let mut game = Game::new();
+    ///
+    /// // Engine plays and gives us its ponder suggestion.
+    /// let result = engine.play(&game, &SearchConfig::depth(15)).unwrap();
+    /// game.do_move(&result.best_move).unwrap();
+    ///
+    /// // Use the same depth limit for pondering so the engine stops on its own.
+    /// if let Some(ref pm) = result.ponder_move {
+    ///     engine.sync_game(&game).unwrap();
+    ///     engine.ponder(pm, &SearchConfig::depth(15)).unwrap();
+    /// }
+    ///
+    /// // ... opponent moves ...
+    ///
+    /// // Opponent played the expected move — get the result immediately.
+    /// let reply = engine.ponderhit().unwrap();
+    /// ```
+    pub fn ponder(&mut self, ponder_move: &str, config: &SearchConfig) -> UciResult<()> {
+        if self.is_pondering {
+            return Err(UciError::EngineError(
+                "already pondering; call ponderhit() or ponder_miss() first".into(),
+            ));
+        }
+
+        // Build a ponder-flavoured go command from the config. to_go_command()
+        // prepends "ponder" and then appends depth/movetime/wtime/… so the
+        // engine has a concrete stopping condition after ponderhit.
+        let ponder_config = SearchConfig {
+            ponder_move: Some(ponder_move.to_owned()),
+            ..config.clone()
+        };
+
+        let pos_cmd = match &self.current_fen {
+            Some(fen) => format!("position fen {fen} moves {ponder_move}"),
+            None      => format!("position startpos moves {ponder_move}"),
+        };
+        self.send(&pos_cmd)?;
+        self.send(&ponder_config.to_go_command())?;
+        self.is_pondering = true;
+        self.ponder_move  = Some(ponder_move.to_owned());
+        Ok(())
+    }
+
+    /// Notifies the engine that the opponent played the expected ponder move.
+    ///
+    /// Sends `stop` to end the background search, then `ponderhit` so the
+    /// engine knows the guess was correct, and finally waits for `bestmove`.
+    /// Because the hash table is already warm from pondering, the reply is
+    /// returned almost instantly at a much higher effective depth than a cold
+    /// search of the same duration.
+    ///
+    /// Returns a [`PlayResult`] containing the engine's best reply **and** its
+    /// ponder suggestion for the next move, so you can chain pondering across
+    /// multiple turns without any extra round-trips.
+    ///
+    /// > **Note for GUI / time-control use:** If you are driving the engine
+    /// > from a full GUI that sends `wtime`/`btime` alongside `go ponder`, the
+    /// > engine stops on its own when the clock runs out. In that case send
+    /// > `ponderhit` without `stop` first. This implementation targets the
+    /// > common standalone / programmatic use case where no external clock is
+    /// > present.
+    pub fn ponderhit(&mut self) -> UciResult<PlayResult> {
+        if !self.is_pondering {
+            return Err(UciError::EngineError(
+                "not currently pondering".into(),
+            ));
+        }
+        // Send stop first so the engine emits bestmove, then ponderhit so it
+        // knows the ponder guess was correct (affects internal scoring/stats).
+        self.send("stop")?;
+        self.send("ponderhit")?;
+        self.is_pondering = false;
+        self.ponder_move  = None;
+        let (best_move, ponder_move, _) = self.wait_for_bestmove()?;
+        Ok(PlayResult { best_move, ponder_move })
+    }
+
+    /// Aborts the current ponder search (opponent did not play the expected move).
+    ///
+    /// Sends `stop`, drains the `bestmove` response, and returns the engine to
+    /// an idle state. You should then set the new position and start a fresh
+    /// search.
+    pub fn ponder_miss(&mut self) -> UciResult<()> {
+        if !self.is_pondering {
+            return Ok(()); // nothing to abort
+        }
+        self.send("stop")?;
+        self.is_pondering = false;
+        self.ponder_move = None;
+        // Drain the bestmove response the engine sends after stop.
+        let _ = self.wait_for_bestmove();
+        Ok(())
+    }
+
+    /// Returns `true` if the engine is currently in a ponder search.
+    pub fn is_pondering(&self) -> bool {
+        self.is_pondering
     }
 
     /// Runs the search and collects all `info` lines, then returns them together
@@ -464,7 +661,11 @@ impl UciEngine {
         }
 
         self.send(&config.to_go_command())?;
-        self.wait_for_bestmove()
+
+        // Use per-search timeout if set, otherwise fall back to global.
+        let timeout = config.read_timeout_ms.unwrap_or(self.timeout_ms);
+        let (best, _, infos) = self.wait_for_bestmove_with_timeout(timeout)?;
+        Ok((best, infos))
     }
 
     /// Runs a full analysis and returns all `info` lines (excluding the final
@@ -503,6 +704,52 @@ impl UciEngine {
     ) -> UciResult<String> {
         self.sync_game(game)?;
         self.best_move(config)
+    }
+
+    /// Plays a move for the current position and returns a [`PlayResult`].
+    ///
+    /// Unlike [`best_move_for_game`], this method also captures the engine's
+    /// **ponder suggestion** — the opponent move the engine expects next. You
+    /// can pass `result.ponder_move` straight to [`ponder`] to start background
+    /// thinking while waiting for the opponent.
+    ///
+    /// This mirrors the python-chess `engine.play(..., ponder=True)` workflow.
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// use lazychess::{Game, uci::{UciEngine, SearchConfig}};
+    ///
+    /// let mut engine = UciEngine::new("/usr/bin/stockfish").unwrap();
+    /// let mut game = Game::new();
+    ///
+    /// let config = SearchConfig::depth(15);
+    ///
+    /// let result = engine.play(&game, &config).unwrap();
+    /// println!("Best move : {}", result.best_move);
+    /// if let Some(ref pm) = result.ponder_move {
+    ///     println!("Ponder on : {pm}");
+    /// }
+    /// game.do_move(&result.best_move).unwrap();
+    ///
+    /// // Start pondering while waiting for the opponent, using the same depth.
+    /// if let Some(ref pm) = result.ponder_move {
+    ///     engine.sync_game(&game).unwrap();
+    ///     engine.ponder(pm, &config).unwrap();
+    /// }
+    /// ```
+    pub fn play(&mut self, game: &Game, config: &SearchConfig) -> UciResult<PlayResult> {
+        self.sync_game(game)?;
+
+        if let Some(n) = config.multipv {
+            self.set_option("MultiPV", &n.to_string())?;
+        } else {
+            let _ = self.set_option("MultiPV", "1");
+        }
+
+        self.send(&config.to_go_command())?;
+        let timeout = config.read_timeout_ms.unwrap_or(self.timeout_ms);
+        let (best_move, ponder_move, _) = self.wait_for_bestmove_with_timeout(timeout)?;
+        Ok(PlayResult { best_move, ponder_move })
     }
 
     /// Runs a full analysis for the position in `game`.
@@ -597,7 +844,12 @@ impl UciEngine {
 
     /// Reads one line from the engine, honouring the timeout.
     fn read_line(&self) -> UciResult<Option<String>> {
-        match self.rx.recv_timeout(Duration::from_millis(self.timeout_ms)) {
+        self.read_line_timeout(self.timeout_ms)
+    }
+
+    /// Reads one line with an explicit timeout (milliseconds).
+    fn read_line_timeout(&self, timeout_ms: u64) -> UciResult<Option<String>> {
+        match self.rx.recv_timeout(Duration::from_millis(timeout_ms)) {
             Ok(EngineMessage::Line(l)) => Ok(Some(l)),
             Ok(EngineMessage::Eof) => Ok(None),
             Err(mpsc::RecvTimeoutError::Timeout) => Err(UciError::Timeout),
@@ -646,27 +898,36 @@ impl UciEngine {
     }
 
     /// Waits for `bestmove` and collects all preceding `info` lines.
-    fn wait_for_bestmove(&mut self) -> UciResult<(String, Vec<AnalysisInfo>)> {
+    ///
+    /// Returns `(best_move, ponder_suggestion, info_lines)`.
+    /// `ponder_suggestion` is the move the engine recommends pondering on next
+    /// (parsed from `bestmove e2e4 ponder e7e5`), if the engine provided one.
+    fn wait_for_bestmove_with_timeout(
+        &mut self,
+        timeout_ms: u64,
+    ) -> UciResult<(String, Option<String>, Vec<AnalysisInfo>)> {
         let mut infos: Vec<AnalysisInfo> = Vec::new();
 
         loop {
-            match self.read_line()? {
+            match self.read_line_timeout(timeout_ms)? {
                 Some(line) => {
                     let trimmed = line.trim();
                     if let Some(rest) = trimmed.strip_prefix("bestmove ") {
-                        // `bestmove e2e4 ponder e7e5`
-                        // grab only the move.
-                        let best = rest
-                            .split_whitespace()
-                            .next()
-                            .unwrap_or("")
-                            .to_owned();
+                        // Parse `bestmove e2e4 ponder e7e5`
+                        let mut tokens = rest.split_whitespace();
+                        let best = tokens.next().unwrap_or("").to_owned();
                         if best.is_empty() || best == "(none)" {
                             return Err(UciError::EngineError(
                                 "engine returned no bestmove".into(),
                             ));
                         }
-                        return Ok((best, infos));
+                        // Extract the engine's ponder suggestion if present.
+                        let ponder_suggestion = if tokens.next() == Some("ponder") {
+                            tokens.next().map(str::to_owned)
+                        } else {
+                            None
+                        };
+                        return Ok((best, ponder_suggestion, infos));
                     } else if trimmed.starts_with("info ")
                         && let Some(info) = parse_info_line(trimmed) {
                             infos.push(info);
@@ -675,6 +936,11 @@ impl UciEngine {
                 None => return Err(UciError::ProcessDied),
             }
         }
+    }
+
+    /// Waits for `bestmove` and collects all preceding `info` lines.
+    fn wait_for_bestmove(&mut self) -> UciResult<(String, Option<String>, Vec<AnalysisInfo>)> {
+        self.wait_for_bestmove_with_timeout(self.timeout_ms)
     }
 }
 
@@ -805,6 +1071,13 @@ fn parse_info_line(line: &str) -> Option<AnalysisInfo> {
             "pv" => {
                 // All remaining tokens belong to the PV.
                 info.pv = words.by_ref().map(str::to_owned).collect();
+            }
+            "string" => {
+                // `info string <free text>` — collect all remaining tokens.
+                let msg: Vec<&str> = words.by_ref().collect();
+                if !msg.is_empty() {
+                    info.message = Some(msg.join(" "));
+                }
             }
             // Ignored tokens: "currmove", "currmovenumber", "cpuload", "tbhits", …
             _ => {}
