@@ -18,10 +18,9 @@ LazyChess implements the full FIDE ruleset — castling, en passant, pawn promot
 > LazyChess is still in its early stages of development. Your feedback and suggestions are very helpful for this library! Don't hesitate to visit the issues page if you have any problems with LazyChess!
 
 ## Installation
-
-```toml
-[dependencies]
-lazychess = "0.1"
+Install with `cargo`:
+```bash
+cargo add lazychess
 ```
 
 ## Quick Start
