@@ -21,7 +21,7 @@
 //! `bestmove e2e4 ponder e7e5` response, and we use that suggestion directly.
 //!
 //! Run with:
-//!   cargo run --example uci_ponder_auto -- /path/to/stockfish
+//!   cargo run --example uci_ponder -- /path/to/stockfish
 //!
 //! If no path is given, the example tries "stockfish" from $PATH.
 
