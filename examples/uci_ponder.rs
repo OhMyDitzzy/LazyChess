@@ -49,7 +49,7 @@ fn main() {
     .unwrap_or_else(|e| {
         eprintln!("Failed to start engine: {e}");
         eprintln!("Make sure Stockfish (or another UCI engine) is installed.");
-        eprintln!("Usage: cargo run --example uci_ponder_auto -- /path/to/engine");
+        eprintln!("Usage: cargo run --example uci_ponder -- /path/to/engine");
         std::process::exit(1);
     });
 

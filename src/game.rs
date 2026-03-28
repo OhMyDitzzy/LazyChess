@@ -139,6 +139,97 @@ impl Game {
         self.board = prev_board;
         Ok(())
     }
+    
+    /// Returns all pieces of `color` on the board as `(square, piece)` pairs.
+    ///
+    /// Used by the classification engine to enumerate unsafe / trapped pieces.
+    ///
+    /// ```rust
+    /// use lazychess::{Game, types::Color};
+    ///
+    /// let game = Game::new();
+    /// let white_pieces = game.get_pieces(Color::White);
+    /// assert_eq!(white_pieces.len(), 16);
+    /// ```
+    pub fn get_pieces(&self, color: Color) -> Vec<(Square, Piece)> {
+        self.board
+            .squares
+            .iter()
+            .enumerate()
+            .filter_map(|(sq, cell)| {
+                cell.filter(|p| p.color == color)
+                    .map(|p| (sq as Square, p))
+            })
+            .collect()
+    }
+    
+    /// Removes the piece on `square` from the board and returns it.
+    ///
+    /// Returns `None` if the square was already empty.  This is used by the
+    /// transitive-attacker calculation in the classification engine (equivalent
+    /// to `chess.js`'s `board.remove(square)`).
+    ///
+    /// > **Note:** This mutates the internal board directly without recording a
+    /// > move in the history. It is intended for temporary "what-if" boards
+    /// > created via [`Game::from_fen`], not for the main game instance.
+    ///
+    /// ```rust
+    /// use lazychess::Game;
+    ///
+    /// let mut game = Game::new();
+    /// let piece = game.remove_piece("e1");
+    /// assert!(piece.is_some()); // White king was there
+    /// ```
+    pub fn remove_piece(&mut self, square: &str) -> Option<Piece> {
+        let sq = parse_square(square)?;
+        self.board.take_piece(sq)
+    }
+    
+    /// Places `piece` on `square`, replacing whatever was there.
+    ///
+    /// Like [`remove_piece`], this mutates the board without recording a move
+    /// and is intended for temporary analysis boards only.
+    ///
+    /// ```rust
+    /// use lazychess::{Game, types::{Piece, PieceType, Color}};
+    ///
+    /// let mut game = Game::new();
+    /// game.put_piece("e4", Piece::new(PieceType::Knight, Color::White)).unwrap();
+    /// ```
+    pub fn put_piece(&mut self, square: &str, piece: Piece) -> ChessResult<()> {
+        let sq = parse_square(square)
+            .ok_or_else(|| ChessError::new(format!("Invalid square: '{square}'")))?;
+        self.board.set_piece(sq, Some(piece));
+        Ok(())
+    }
+    
+    /// Returns a new `Game` with the side-to-move flipped but all other state
+    /// (pieces, castling rights, en passant) preserved.
+    ///
+    /// This mirrors `setFenTurn` from the TypeScript classification engine and
+    /// is used when computing attackers: to find which opponent pieces attack a
+    /// square we flip the turn so `generate_legal_moves` generates the
+    /// opponent's moves.
+    ///
+    /// ```rust
+    /// use lazychess::{Game, types::Color};
+    ///
+    /// let game = Game::new(); // White to move
+    /// let flipped = game.with_flipped_turn();
+    /// assert_eq!(flipped.side_to_move(), Color::Black);
+    /// ```
+    pub fn with_flipped_turn(&self) -> Self {
+        let mut board = self.board.clone();
+        board.side_to_move = board.side_to_move.opposite();
+        Self {
+            board,
+            start_fen: self.start_fen.clone(),
+            history: Vec::new(),      // analysis board — no history needed
+            position_counts: HashMap::new(),
+            opening_book: OpeningBook::empty(),
+            opening_name: None,
+        }
+    }
 
     /// Returns `true` if the move string is legal in the current position.
     ///

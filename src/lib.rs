@@ -5,7 +5,7 @@
 //! LazyChess implements all standard FIDE rules, including castling, en passant,
 //! pawn promotion, and every draw condition (fifty-move rule, threefold
 //! repetition, insufficient material). It also supports FEN / PGN serialisation,
-//! UCI communication, and an optional opening book.
+//! UCI communication, an optional opening book, and move classification analysis.
 //!
 //! ## Quick start
 //!
@@ -31,6 +31,8 @@ pub mod pgn;
 pub mod opening;
 pub mod game;
 pub mod uci;
+pub mod classifications;
+pub mod analyzer;
 
 // Re-export the most commonly used items at the crate root.
 pub use types::{
@@ -43,3 +45,10 @@ pub use movegen::{generate_legal_moves, is_in_check, is_square_attacked, apply_m
 pub use fen::{board_to_fen, parse_fen};
 pub use pgn::{move_to_san, moves_to_pgn, parse_pgn};
 pub use opening::OpeningBook;
+
+// Re-export the most commonly used analysis items.
+pub use classifications::{
+    ClassificationKind, MoveClassification, Evaluation,
+    get_move_accuracy, get_expected_points_loss,
+};
+pub use analyzer::{AnalyzerConfig, GameReport, MoveAnalyzer, PlayerSummary, PgnAnalysisBuilder, Side};

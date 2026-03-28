@@ -42,6 +42,7 @@ use std::time::Duration;
 
 use crate::game::Game;
 use crate::types::ChessError;
+use crate::Board;
 
 /// All errors that can occur while communicating with a UCI engine.
 #[derive(Debug)]
@@ -666,6 +667,66 @@ impl UciEngine {
         let timeout = config.read_timeout_ms.unwrap_or(self.timeout_ms);
         let (best, _, infos) = self.wait_for_bestmove_with_timeout(timeout)?;
         Ok((best, infos))
+    }
+    
+    /// Returns the top-N best moves for a raw board position.
+    ///
+    /// Equivalent to [`top_moves`] but accepts a `&Board` directly, which is
+    /// useful when analysing temporary positions inside the move classifier.
+    pub fn top_moves_from_board(
+        &mut self,
+        board: &Board,
+        n: u32,
+        config: &SearchConfig,
+    ) -> UciResult<Vec<(String, Option<Score>)>> {
+        let n = n.clamp(1, 500);
+        let cfg = SearchConfig {
+            multipv: Some(n),
+            ..config.clone()
+        };
+        let fen = crate::fen::board_to_fen(board);
+        self.set_position_fen(&fen)?;
+        let (_, infos) = self.best_move_with_analysis(&cfg)?;
+
+        let mut by_line: std::collections::HashMap<u32, AnalysisInfo> =
+            std::collections::HashMap::new();
+        for info in infos {
+            let key = info.multipv.unwrap_or(1);
+            let deeper = by_line.get(&key).and_then(|p| p.depth).unwrap_or(0);
+            if info.depth.unwrap_or(0) >= deeper {
+                by_line.insert(key, info);
+            }
+        }
+
+        let mut keys: Vec<u32> = by_line.keys().copied().collect();
+        keys.sort_unstable();
+
+        Ok(keys
+            .into_iter()
+            .filter_map(|k| {
+                let info = by_line.remove(&k)?;
+                let mv = info.pv.first()?.clone();
+                Some((mv, info.score))
+            })
+            .collect())
+    }
+    
+    /// Evaluates a raw board position and returns a single score.
+    ///
+    /// Equivalent to [`evaluate`] but accepts a `&Board` directly.
+    pub fn evaluate_board(
+        &mut self,
+        board: &Board,
+        config: &SearchConfig,
+    ) -> UciResult<Option<Score>> {
+        let fen = crate::fen::board_to_fen(board);
+        self.set_position_fen(&fen)?;
+        let infos = self.analyze(config)?;
+        Ok(infos
+            .iter()
+            .filter(|i| i.multipv.unwrap_or(1) == 1)
+            .max_by_key(|i| i.depth.unwrap_or(0))
+            .and_then(|i| i.score.clone()))
     }
 
     /// Runs a full analysis and returns all `info` lines (excluding the final
