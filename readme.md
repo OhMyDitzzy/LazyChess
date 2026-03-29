@@ -384,6 +384,50 @@ let report = analyzer
     .run()?;
 ```
 
+#### Partial Results on Engine Crash
+
+`.run()` stops and returns an error the moment the engine fails, discarding all results collected so far. Use `.run_partial()` instead to recover whatever was analysed before the crash.
+
+```rust
+match analyzer
+    .analyze_pgn(pgn)
+    .on_progress(|cur, tot, mv| println!("Analysing {cur}/{tot}: {mv}"))
+    .run_partial()
+{
+    Ok(report) => {
+        println!("{}", report.to_table());
+        println!("Annotated PGN: {}", report.to_pgn());
+    }
+    Err(partial) => {
+        eprintln!("Engine crashed: {}", partial.error);
+
+        if partial.report.moves.is_empty() {
+            eprintln!("No moves were analysed.");
+        } else {
+            eprintln!("Partial results ({} moves analysed):", partial.report.moves.len());
+            println!("{}", partial.report.to_table());
+            println!("Partial PGN: {}", partial.report.to_pgn());
+        }
+    }
+}
+```
+
+`run_partial()` accepts all the same builder options as `run()`:
+
+```rust
+analyzer
+    .analyze_pgn(pgn)
+    .side(Side::White)
+    .min_classification(ClassificationKind::Mistake)
+    .run_partial()
+```
+
+The `PartialReport` returned in `Err` contains:
+- `report`: a valid `GameReport` of every move that succeeded before the crash
+- `error`: the underlying `ChessError` that caused the abort
+
+If you don't need partial results and just want to propagate the error, `.run()` is still the simpler choice.
+
 #### Timeout for Deep Analysis
 
 The default 60-second timeout per move is sufficient for most depths. For very deep searches (depth 22+) or slow hardware, raise it:

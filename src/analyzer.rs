@@ -322,9 +322,22 @@ impl GameReport {
 
 type ProgressFn<'a> = Box<dyn Fn(usize, usize, &str) + 'a>;
 
+/// Returned by [`PgnAnalysisBuilder::run_partial`] when analysis is interrupted.
+///
+/// Contains all results collected before the engine error, plus the error itself.
+/// `report.moves` may be empty if the engine failed before any move was analysed.
+#[derive(Debug)]
+pub struct PartialReport {
+    /// Every move that was successfully classified before the engine failed.
+    pub report: GameReport,
+    /// The error that caused analysis to stop.
+    pub error: ChessError,
+}
+
 /// Builder returned by [`MoveAnalyzer::analyze_pgn`].
 ///
-/// Configure via method chaining, then call `.run()` to execute.
+/// Configure via method chaining, then call `.run()` to execute or
+/// `.run_partial()` to recover results even if the engine crashes mid-game.
 ///
 /// ```rust,no_run
 /// # use lazychess::{analyzer::{MoveAnalyzer, AnalyzerConfig, Side}, uci::UciEngine};
@@ -384,7 +397,41 @@ impl<'a, 'e> PgnAnalysisBuilder<'a, 'e> {
     }
 
     /// Consumes the builder, runs the analysis, and returns a [`GameReport`].
+    ///
+    /// Returns `Err` immediately if the engine fails at any point, discarding
+    /// all results collected so far. Use [`run_partial`] if you need to recover
+    /// moves that were successfully analysed before a crash.
     pub fn run(self) -> ChessResult<GameReport> {
+        self.run_partial().map_err(|p| p.error)
+    }
+
+    /// Consumes the builder, runs the analysis, and returns a [`GameReport`].
+    ///
+    /// Unlike [`run`], if the engine crashes mid-game the partial results are
+    /// preserved inside the [`PartialReport`] returned in `Err`. Check
+    /// `partial.report.moves.is_empty()` to distinguish a failure before any
+    /// move was analysed from a crash partway through.
+    ///
+    /// All builder options (`on_progress`, `side`, `min_classification`) apply
+    /// exactly as they do with [`run`].
+    ///
+    /// ```rust,no_run
+    /// # use lazychess::{analyzer::{MoveAnalyzer, AnalyzerConfig}, uci::UciEngine};
+    /// # let mut engine = UciEngine::with_options("/usr/bin/stockfish", &[]).unwrap();
+    /// # let mut analyzer = MoveAnalyzer::new(&mut engine, AnalyzerConfig::depth(15));
+    /// # let pgn = "";
+    /// match analyzer.analyze_pgn(pgn).run_partial() {
+    ///     Ok(report) => println!("{}", report.to_table()),
+    ///     Err(partial) => {
+    ///         eprintln!("Engine crashed: {}", partial.error);
+    ///         if !partial.report.moves.is_empty() {
+    ///             println!("{}", partial.report.to_table());
+    ///             println!("Partial PGN: {}", partial.report.to_pgn());
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    pub fn run_partial(self) -> Result<GameReport, PartialReport> {
         let PgnAnalysisBuilder {
             analyzer,
             pgn,
@@ -393,13 +440,51 @@ impl<'a, 'e> PgnAnalysisBuilder<'a, 'e> {
             side,
         } = self;
 
+        macro_rules! partial_err {
+            ($all:expr, $white:expr, $black:expr, $err:expr) => {
+                return Err(PartialReport {
+                    report: GameReport {
+                        white: PlayerSummary::from_classifications(&$white),
+                        black: PlayerSummary::from_classifications(&$black),
+                        moves: $all,
+                    },
+                    error: $err,
+                })
+            };
+        }
+
         let start_fen = board_to_fen(&crate::board::Board::starting_position());
-        let (_, san_moves) = crate::pgn::parse_pgn(&pgn)
-            .map_err(|e| ChessError::new(format!("PGN parse error: {e}")))?;
-        let uci_moves = pgn_moves_to_uci(&start_fen, &san_moves)?;
+        let (_, san_moves) = crate::pgn::parse_pgn(&pgn).map_err(|e| PartialReport {
+            report: GameReport {
+                white: PlayerSummary::from_classifications(&[]),
+                black: PlayerSummary::from_classifications(&[]),
+                moves: vec![],
+            },
+            error: ChessError::new(format!("PGN parse error: {e}")),
+        })?;
+
+        let uci_moves = pgn_moves_to_uci(&start_fen, &san_moves).map_err(|e| PartialReport {
+            report: GameReport {
+                white: PlayerSummary::from_classifications(&[]),
+                black: PlayerSummary::from_classifications(&[]),
+                moves: vec![],
+            },
+            error: e,
+        })?;
+
         let total = uci_moves.len();
 
-        analyzer.engine.new_game().map_err(ChessError::from)?;
+        analyzer
+            .engine
+            .new_game()
+            .map_err(|e| PartialReport {
+                report: GameReport {
+                    white: PlayerSummary::from_classifications(&[]),
+                    black: PlayerSummary::from_classifications(&[]),
+                    moves: vec![],
+                },
+                error: ChessError::from(e),
+            })?;
 
         let mut game = Game::new();
         let mut all_moves: Vec<MoveClassification> = Vec::new();
@@ -420,7 +505,10 @@ impl<'a, 'e> PgnAnalysisBuilder<'a, 'e> {
 
             if !skip {
                 let move_number = (i / 2) as u32 + 1;
-                let mc = analyzer.classify_board(game.current_board(), uci, move_number)?;
+                let mc = match analyzer.classify_board(game.current_board(), uci, move_number) {
+                    Ok(mc) => mc,
+                    Err(e) => partial_err!(all_moves, white_classified, black_classified, e),
+                };
 
                 let include = match &min_classification {
                     Some(threshold) => mc.kind >= *threshold,
@@ -437,7 +525,9 @@ impl<'a, 'e> PgnAnalysisBuilder<'a, 'e> {
                 }
             }
 
-            game.do_move(uci)?;
+            if let Err(e) = game.do_move(uci) {
+                partial_err!(all_moves, white_classified, black_classified, e);
+            }
         }
 
         Ok(GameReport {
