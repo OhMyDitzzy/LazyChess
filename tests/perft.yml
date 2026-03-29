@@ -1,0 +1,49 @@
+name: Perft Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      depth:
+        description: "Perft depth (default: 5)"
+        required: false
+        default: "5"
+      fen:
+        description: "FEN position (leave empty for startpos)"
+        required: false
+        default: ""
+
+jobs:
+  perft:
+    name: Run Perft
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Build (release)
+        run: cargo build --example perft --release
+
+      - name: Run Perft
+        run: |
+          DEPTH="${{ github.event.inputs.depth }}"
+          FEN="${{ github.event.inputs.fen }}"
+
+          if [ -z "$FEN" ]; then
+            cargo run --example perft --release -- "$DEPTH"
+          else
+            cargo run --example perft --release -- "$DEPTH" "$FEN"
+          fi
