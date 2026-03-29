@@ -431,7 +431,7 @@ impl<'a, 'e> PgnAnalysisBuilder<'a, 'e> {
     ///     }
     /// }
     /// ```
-    pub fn run_partial(self) -> Result<GameReport, PartialReport> {
+    pub fn run_partial(self) -> Result<GameReport, Box<PartialReport>> {
         let PgnAnalysisBuilder {
             analyzer,
             pgn,
@@ -442,49 +442,52 @@ impl<'a, 'e> PgnAnalysisBuilder<'a, 'e> {
 
         macro_rules! partial_err {
             ($all:expr, $white:expr, $black:expr, $err:expr) => {
-                return Err(PartialReport {
+                return Err(Box::new(PartialReport {
                     report: GameReport {
                         white: PlayerSummary::from_classifications(&$white),
                         black: PlayerSummary::from_classifications(&$black),
                         moves: $all,
                     },
                     error: $err,
-                })
+                }))
             };
         }
 
         let start_fen = board_to_fen(&crate::board::Board::starting_position());
-        let (_, san_moves) = crate::pgn::parse_pgn(&pgn).map_err(|e| PartialReport {
-            report: GameReport {
-                white: PlayerSummary::from_classifications(&[]),
-                black: PlayerSummary::from_classifications(&[]),
-                moves: vec![],
-            },
-            error: ChessError::new(format!("PGN parse error: {e}")),
+        let (_, san_moves) = crate::pgn::parse_pgn(&pgn).map_err(|e| {
+            Box::new(PartialReport {
+                report: GameReport {
+                    white: PlayerSummary::from_classifications(&[]),
+                    black: PlayerSummary::from_classifications(&[]),
+                    moves: vec![],
+                },
+                error: ChessError::new(format!("PGN parse error: {e}")),
+            })
         })?;
 
-        let uci_moves = pgn_moves_to_uci(&start_fen, &san_moves).map_err(|e| PartialReport {
-            report: GameReport {
-                white: PlayerSummary::from_classifications(&[]),
-                black: PlayerSummary::from_classifications(&[]),
-                moves: vec![],
-            },
-            error: e,
+        let uci_moves = pgn_moves_to_uci(&start_fen, &san_moves).map_err(|e| {
+            Box::new(PartialReport {
+                report: GameReport {
+                    white: PlayerSummary::from_classifications(&[]),
+                    black: PlayerSummary::from_classifications(&[]),
+                    moves: vec![],
+                },
+                error: e,
+            })
         })?;
 
         let total = uci_moves.len();
 
-        analyzer
-            .engine
-            .new_game()
-            .map_err(|e| PartialReport {
+        analyzer.engine.new_game().map_err(|e| {
+            Box::new(PartialReport {
                 report: GameReport {
                     white: PlayerSummary::from_classifications(&[]),
                     black: PlayerSummary::from_classifications(&[]),
                     moves: vec![],
                 },
                 error: ChessError::from(e),
-            })?;
+            })
+        })?;
 
         let mut game = Game::new();
         let mut all_moves: Vec<MoveClassification> = Vec::new();
