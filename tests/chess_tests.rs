@@ -335,4 +335,98 @@ mod tests {
         assert!(parse_square("z9").is_none());
         assert!(parse_square("").is_none());
     }
+    
+    // References: https://www.chessprogramming.org/Perft_Results    
+    fn perft(board: &lazychess::Board, depth: u32) -> u64 {
+        if depth == 0 {
+            return 1;
+        }
+        let moves = lazychess::generate_legal_moves(board);
+        if depth == 1 {
+            return moves.len() as u64;
+        }
+        moves
+            .iter()
+            .map(|mv| perft(&lazychess::apply_move(board, mv), depth - 1))
+            .sum()
+    }
+
+    fn perft_fen(fen: &str, depth: u32) -> u64 {
+        let board = lazychess::parse_fen(fen).expect("FEN must be valid");
+        perft(&board, depth)
+    }
+
+    // Position 1: starting position
+    #[test]
+    fn perft_startpos_depth1() {
+        assert_eq!(perft_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 1), 20);
+    }
+
+    #[test]
+    fn perft_startpos_depth2() {
+        assert_eq!(perft_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 2), 400);
+    }
+
+    #[test]
+    fn perft_startpos_depth3() {
+        assert_eq!(perft_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 3), 8_902);
+    }
+
+    #[test]
+    fn perft_startpos_depth4() {
+        assert_eq!(perft_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 4), 197_281);
+    }
+
+    // Position 2: Kiwipete (heavy castling, en passant, promotions)
+    #[test]
+    fn perft_kiwipete_depth1() {
+        assert_eq!(perft_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1", 1), 48);
+    }
+
+    #[test]
+    fn perft_kiwipete_depth2() {
+        assert_eq!(perft_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1", 2), 2_039);
+    }
+
+    #[test]
+    fn perft_kiwipete_depth3() {
+        assert_eq!(perft_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1", 3), 97_862);
+    }
+
+    // Position 3: promotion-heavy
+    #[test]
+    fn perft_pos3_depth1() {
+        assert_eq!(perft_fen("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1", 1), 14);
+    }
+
+    #[test]
+    fn perft_pos3_depth2() {
+        assert_eq!(perft_fen("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1", 2), 191);
+    }
+
+    #[test]
+    fn perft_pos3_depth3() {
+        assert_eq!(perft_fen("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1", 3), 2_812);
+    }
+
+    #[test]
+    fn perft_pos3_depth4() {
+        assert_eq!(perft_fen("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1", 4), 43_238);
+    }
+
+    // Position 4: castling edge cases
+    #[test]
+    fn perft_pos4_depth1() {
+        assert_eq!(perft_fen("r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1", 1), 6);
+    }
+
+    #[test]
+    fn perft_pos4_depth2() {
+        assert_eq!(perft_fen("r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1", 2), 264);
+    }
+
+    #[test]
+    fn perft_pos4_depth3() {
+        assert_eq!(perft_fen("r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1", 3), 9_467);
+    }
 }
