@@ -12,7 +12,7 @@ use crate::opening::{BUILTIN_OPENINGS_JSON, OpeningBook};
 use crate::pgn::{move_to_san, pgn_moves_to_uci};
 use crate::types::{ChessError, ChessResult, Color};
 use crate::uci::{Score, SearchConfig, UciEngine};
-use cli_table::{format::Justify, Cell, Style, Table};
+use cli_table::{Cell, Style, Table, format::Justify};
 use serde::Serialize;
 
 fn classification_annotation(kind: &ClassificationKind) -> &'static str {
@@ -57,6 +57,13 @@ pub enum Side {
 pub struct AnalyzerConfig {
     pub search: SearchConfig,
     pub read_timeout_ms: Option<u64>,
+    /// Number of alternative engine moves to surface per position (default: 0).
+    ///
+    /// When non-zero, each [`MoveClassification`] will have its `alternatives`
+    /// field populated with up to `n` engine moves ranked 2nd and beyond.
+    /// This requires the engine to run MultiPV mode, which adds a small
+    /// overhead proportional to `n`.
+    pub alternatives: usize,
 }
 
 impl AnalyzerConfig {
@@ -64,16 +71,26 @@ impl AnalyzerConfig {
         Self {
             search: SearchConfig::depth(d),
             read_timeout_ms: Some(60_000),
+            alternatives: 0,
         }
     }
     pub fn movetime(ms: u64) -> Self {
         Self {
             search: SearchConfig::movetime(ms),
             read_timeout_ms: Some(60_000),
+            alternatives: 0,
         }
     }
     pub fn with_timeout(mut self, ms: u64) -> Self {
         self.read_timeout_ms = Some(ms);
+        self
+    }
+    /// Request up to `n` alternative moves per position.
+    ///
+    /// These appear as [`MoveClassification::alternatives`] in every result.
+    /// Moves are in UCI notation, ranked by engine score (best first).
+    pub fn with_alternatives(mut self, n: usize) -> Self {
+        self.alternatives = n;
         self
     }
 }
@@ -83,6 +100,7 @@ impl Default for AnalyzerConfig {
         Self {
             search: SearchConfig::depth(16),
             read_timeout_ms: Some(60_000),
+            alternatives: 0,
         }
     }
 }
@@ -180,6 +198,8 @@ struct MoveJson<'a> {
     san: &'a str,
     uci: &'a str,
     best_move: &'a str,
+    suggested_move: Option<&'a str>,
+    alternatives: &'a [String],
     classification: String,
     point_loss: f64,
     accuracy: f64,
@@ -208,22 +228,47 @@ impl GameReport {
             let ann = classification_annotation(&mc.kind);
             let annotated = format!("{}{}", mc.san, ann);
 
+            // build inline comment and variation when the engine recommends
+            // something other than what was played
+            let suggestion = mc
+                .suggested_move()
+                .filter(|s| *s != mc.played_move)
+                .map(|best| {
+                    let mut suffix = format!(" {{ Best was {best} }}");
+                    // append an alternative-move variation so GUIs can show the line
+                    let dot_str = match mc.color {
+                        Color::White => format!("{}.", mc.move_number),
+                        Color::Black => format!("{}...", mc.move_number),
+                    };
+                    suffix.push_str(&format!(" ( {dot_str} {best}"));
+                    if !mc.alternatives.is_empty() {
+                        let alts = mc.alternatives.join(" ");
+                        suffix.push_str(&format!(" {{ alternatives: {alts} }}"));
+                    }
+                    suffix.push_str(" )");
+                    suffix
+                })
+                .unwrap_or_default();
+
             match mc.color {
                 Color::White => {
                     if !pgn.is_empty() {
                         pgn.push(' ');
                     }
-                    pgn.push_str(&format!("{}. {}", mc.move_number, annotated));
+                    pgn.push_str(&format!("{}. {}{}", mc.move_number, annotated, suggestion));
                 }
                 Color::Black => {
                     if mc.move_number != last_num {
                         if !pgn.is_empty() {
                             pgn.push(' ');
                         }
-                        pgn.push_str(&format!("{}... {}", mc.move_number, annotated));
+                        pgn.push_str(&format!(
+                            "{}... {}{}",
+                            mc.move_number, annotated, suggestion
+                        ));
                     } else {
                         pgn.push(' ');
-                        pgn.push_str(&annotated);
+                        pgn.push_str(&format!("{}{}", annotated, suggestion));
                     }
                 }
             }
@@ -253,6 +298,8 @@ impl GameReport {
                 san: &mc.san,
                 uci: &mc.played_move,
                 best_move: &mc.best_move,
+                suggested_move: mc.suggested_move(),
+                alternatives: &mc.alternatives,
                 classification: mc.kind.to_string(),
                 point_loss: mc.point_loss,
                 accuracy: mc.accuracy,
@@ -287,13 +334,25 @@ impl GameReport {
                 let ann = classification_annotation(&mc.kind);
                 let san_ann = format!("{}{}", mc.san, ann);
 
+                // show the suggested move only when it differs from what was played
+                let suggested_str = mc
+                    .suggested_move()
+                    .filter(|s| *s != mc.played_move)
+                    .map(|s| s.to_owned())
+                    .unwrap_or_default();
+
                 vec![
                     num_str.cell(),
                     color_str.cell(),
                     san_ann.cell(),
                     mc.kind.to_string().cell(),
-                    format!("{:.4}", mc.point_loss).cell().justify(Justify::Right),
-                    format!("{:.1}%", mc.accuracy).cell().justify(Justify::Right),
+                    suggested_str.cell(),
+                    format!("{:.4}", mc.point_loss)
+                        .cell()
+                        .justify(Justify::Right),
+                    format!("{:.1}%", mc.accuracy)
+                        .cell()
+                        .justify(Justify::Right),
                 ]
             })
             .collect();
@@ -305,6 +364,7 @@ impl GameReport {
                 "Color".cell().bold(true),
                 "Move".cell().bold(true),
                 "Classification".cell().bold(true),
+                "Suggested".cell().bold(true),
                 "Loss".cell().bold(true),
                 "Accuracy".cell().bold(true),
             ])
@@ -690,19 +750,31 @@ impl<'e> MoveAnalyzer<'e> {
             search.read_timeout_ms = Some(t);
         }
 
+        // request enough multipv lines to cover the top move + all requested alternatives;
+        // we always ask for at least 2 so that second_best_eval is available for
+        // brilliant/great classification even when alternatives == 0.
+        let n_request = (self.config.alternatives + 1).max(2);
         let eval_config = SearchConfig {
-            multipv: Some(2),
+            multipv: Some(n_request as u32),
             ..search.clone()
         };
         let top = self
             .engine
-            .top_moves_from_board(board_before, 2, &eval_config)
+            .top_moves_from_board(board_before, n_request.try_into().unwrap(), &eval_config)
             .map_err(ChessError::from)?;
 
         let best_move_uci = top
             .first()
             .map(|(mv, _)| mv.clone())
             .unwrap_or_else(|| mv_uci.to_owned());
+
+        // engine moves ranked 2nd and beyond, up to the configured limit
+        let alternatives: Vec<String> = top
+            .iter()
+            .skip(1)
+            .take(self.config.alternatives)
+            .map(|(mv, _)| mv.clone())
+            .collect();
 
         let eval_before = normalize_eval_to_white(
             top.first()
@@ -770,6 +842,7 @@ impl<'e> MoveAnalyzer<'e> {
             san,
             played_move: mv_uci.to_owned(),
             best_move: best_move_uci,
+            alternatives,
             kind,
             color,
             move_number,
