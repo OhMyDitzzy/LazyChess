@@ -1,19 +1,15 @@
 use crate::types::*;
 
-// ---------------------------------------------------------------------------
-// Index helpers — added here so types.rs stays untouched.
-// ---------------------------------------------------------------------------
-
 impl PieceType {
     #[inline(always)]
     pub const fn index(self) -> usize {
         match self {
-            PieceType::Pawn   => 0,
+            PieceType::Pawn => 0,
             PieceType::Knight => 1,
             PieceType::Bishop => 2,
-            PieceType::Rook   => 3,
-            PieceType::Queen  => 4,
-            PieceType::King   => 5,
+            PieceType::Rook => 3,
+            PieceType::Queen => 4,
+            PieceType::King => 5,
         }
     }
 
@@ -41,10 +37,6 @@ impl Color {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Board
-// ---------------------------------------------------------------------------
-
 /// The complete state of the chess board at a single point in time.
 ///
 /// Piece positions are stored as twelve `u64` bitboards — one per
@@ -70,16 +62,16 @@ pub struct Board {
 }
 
 impl Board {
-    // -----------------------------------------------------------------------
-    // Occupancy queries
-    // -----------------------------------------------------------------------
-
     /// Bitboard of every square occupied by `color`.
     #[inline(always)]
     pub fn occupancy(&self, color: Color) -> u64 {
         let c = color.index();
-        self.bb[c][0] | self.bb[c][1] | self.bb[c][2]
-            | self.bb[c][3] | self.bb[c][4] | self.bb[c][5]
+        self.bb[c][0]
+            | self.bb[c][1]
+            | self.bb[c][2]
+            | self.bb[c][3]
+            | self.bb[c][4]
+            | self.bb[c][5]
     }
 
     /// Bitboard of every occupied square (both colours).
@@ -94,13 +86,10 @@ impl Board {
         self.bb[color.index()][pt.index()]
     }
 
-    // -----------------------------------------------------------------------
-    // Square-level compat API (used by fen, pgn, game, analyzer…)
-    // -----------------------------------------------------------------------
-
     /// Returns the piece on `sq`, or `None` if the square is empty.
     ///
-    /// O(12) — not on the movegen hot path; use bitboards directly there.
+    /// Scans all 12 bitboards (O(12)); avoid on the movegen hot path —
+    /// use bitboard operations directly there.
     #[inline]
     pub fn piece_at(&self, sq: Square) -> Option<Piece> {
         let bit = 1u64 << sq;
@@ -124,7 +113,8 @@ impl Board {
         }
     }
 
-    /// Removes and returns whatever piece is on `sq`.
+    /// Removes and returns whatever piece is on `sq`, or `None` if the square
+    /// was already empty.
     #[inline]
     pub fn take_piece(&mut self, sq: Square) -> Option<Piece> {
         let p = self.piece_at(sq);
@@ -134,8 +124,11 @@ impl Board {
         p
     }
 
-    /// Returns a flat `[Option<Piece>; 64]` snapshot — mainly for code that
-    /// previously accessed `board.squares` directly.
+    /// Returns a flat `[Option<Piece>; 64]` snapshot of the board.
+    ///
+    /// Index `n` corresponds to square `n` (a1 = 0 … h8 = 63). This is
+    /// primarily used by code that needs to iterate over all pieces without
+    /// working directly with bitboards.
     pub fn squares(&self) -> [Option<Piece>; 64] {
         let mut arr = [None; 64];
         for sq in 0u8..64 {
@@ -143,15 +136,21 @@ impl Board {
         }
         arr
     }
-    
-    /// Square of the king of `color`. Returns `None` only in an illegal position.
+
+    /// Square of the king of `color`, found in O(1) via `trailing_zeros`.
+    ///
+    /// Returns `None` only in an illegal position where the king is missing.
     #[inline]
     pub fn king_square(&self, color: Color) -> Option<Square> {
         let bb = self.bb[color.index()][PieceType::King.index()];
-        if bb == 0 { None } else { Some(bb.trailing_zeros() as Square) }
+        if bb == 0 {
+            None
+        } else {
+            Some(bb.trailing_zeros() as Square)
+        }
     }
 
-    /// Clears all bitboards at `sq` (12 writes).
+    /// Clears all bitboards at `sq`.
     #[inline]
     pub(crate) fn clear_square(&mut self, sq: Square) {
         let mask = !(1u64 << sq);
@@ -162,28 +161,7 @@ impl Board {
         }
     }
 
-    /// Removes a specific (colour, piece-type) bit.
-    #[inline(always)]
-    pub(crate) fn remove_piece_bb(&mut self, sq: Square, color: Color, pt: PieceType) {
-        self.bb[color.index()][pt.index()] &= !(1u64 << sq);
-    }
-
-    /// Sets a specific (colour, piece-type) bit.
-    #[inline(always)]
-    pub(crate) fn add_piece_bb(&mut self, sq: Square, color: Color, pt: PieceType) {
-        self.bb[color.index()][pt.index()] |= 1u64 << sq;
-    }
-
-    /// Clears all *enemy* bitboards at `sq` (used for captures in apply_move).
-    #[inline]
-    pub(crate) fn clear_enemy_at(&mut self, sq: Square, enemy: Color) {
-        let mask = !(1u64 << sq);
-        let ei = enemy.index();
-        for pi in 0..6usize {
-            self.bb[ei][pi] &= mask;
-        }
-    }
-
+    /// Returns a board set up in the standard chess starting position.
     pub fn starting_position() -> Self {
         let mut b = Self {
             bb: [[0u64; 6]; 2],
@@ -197,19 +175,19 @@ impl Board {
         let w = Color::White.index();
         let k = Color::Black.index();
 
-        b.bb[w][PieceType::Pawn.index()]   = 0x000000000000FF00; // rank 2
+        b.bb[w][PieceType::Pawn.index()] = 0x000000000000FF00; // rank 2
         b.bb[w][PieceType::Knight.index()] = 0x0000000000000042; // b1, g1
         b.bb[w][PieceType::Bishop.index()] = 0x0000000000000024; // c1, f1
-        b.bb[w][PieceType::Rook.index()]   = 0x0000000000000081; // a1, h1
-        b.bb[w][PieceType::Queen.index()]  = 0x0000000000000008; // d1
-        b.bb[w][PieceType::King.index()]   = 0x0000000000000010; // e1
+        b.bb[w][PieceType::Rook.index()] = 0x0000000000000081; // a1, h1
+        b.bb[w][PieceType::Queen.index()] = 0x0000000000000008; // d1
+        b.bb[w][PieceType::King.index()] = 0x0000000000000010; // e1
 
-        b.bb[k][PieceType::Pawn.index()]   = 0x00FF000000000000; // rank 7
+        b.bb[k][PieceType::Pawn.index()] = 0x00FF000000000000; // rank 7
         b.bb[k][PieceType::Knight.index()] = 0x4200000000000000; // b8, g8
         b.bb[k][PieceType::Bishop.index()] = 0x2400000000000000; // c8, f8
-        b.bb[k][PieceType::Rook.index()]   = 0x8100000000000000; // a8, h8
-        b.bb[k][PieceType::Queen.index()]  = 0x0800000000000000; // d8
-        b.bb[k][PieceType::King.index()]   = 0x1000000000000000; // e8
+        b.bb[k][PieceType::Rook.index()] = 0x8100000000000000; // a8, h8
+        b.bb[k][PieceType::Queen.index()] = 0x0800000000000000; // d8
+        b.bb[k][PieceType::King.index()] = 0x1000000000000000; // e8
 
         b
     }
@@ -241,7 +219,10 @@ impl Board {
         out
     }
 
-    /// A compact position key suitable for threefold-repetition detection.
+    /// A compact position key for threefold-repetition detection.
+    ///
+    /// Includes piece placement, side to move, castling rights, and en passant
+    /// target — matching the fields that define a unique chess position.
     pub fn position_key(&self) -> String {
         let ep = self
             .en_passant

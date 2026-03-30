@@ -153,8 +153,8 @@ impl Game {
     /// ```
     pub fn get_pieces(&self, color: Color) -> Vec<(Square, Piece)> {
         self.board
-            .squares
-            .iter()
+            .squares()
+            .into_iter()
             .enumerate()
             .filter_map(|(sq, cell)| {
                 cell.filter(|p| p.color == color)
@@ -468,10 +468,11 @@ impl Game {
     /// Returns an 8×8 array of `Option<Piece>` representing the current board.
     /// Index `[rank][file]`, rank 0 = rank 1 (White's back rank).
     pub fn board(&self) -> [[Option<Piece>; 8]; 8] {
+        let squares = self.board.squares();
         let mut arr = [[None; 8]; 8];
         for (rank, row) in arr.iter_mut().enumerate() {
             for (file, square) in row.iter_mut().enumerate() {
-                *square = self.board.squares[rank * 8 + file];
+                *square = squares[rank * 8 + file];
             }
         }
         arr
@@ -480,13 +481,14 @@ impl Game {
     /// Returns an ASCII/Unicode representation of the board suitable for
     /// terminal output.
     pub fn display_board(&self) -> String {
+        let squares = self.board.squares();
         let mut s = String::with_capacity(320);
         s.push_str("   +------------------------+\n");
         for rank in (0..8u8).rev() {
             s.push_str(&format!(" {} |", rank + 1));
             for file in 0..8u8 {
                 let sq = rank * 8 + file;
-                let ch = match self.board.squares[sq as usize] {
+                let ch = match squares[sq as usize] {
                     Some(p) => p.to_fen_char(),
                     None => '.',
                 };

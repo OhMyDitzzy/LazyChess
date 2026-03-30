@@ -3,38 +3,18 @@ use crate::types::*;
 
 /// Parses a FEN string into a `Board`.
 ///
-/// Full FEN format:
+/// Expects the standard six-field format:
 /// `<placement> <color> <castling> <en_passant> <halfmove> <fullmove>`
+///
+/// The last two fields (halfmove clock and fullmove number) are optional and
+/// default to `0` and `1` respectively if omitted.
+///
+/// Returns a [`ChessError`] if any field is malformed or a piece character is
+/// unrecognised.
 pub fn parse_fen(fen: &str) -> ChessResult<Board> {
     let parts: Vec<&str> = fen.split_whitespace().collect();
     if parts.len() < 4 {
         return Err(ChessError::new("FEN must have at least 4 fields"));
-    }
-
-    let mut squares = [None; 64];
-
-    // Piece placement – FEN lists rank 8 first, rank 1 last.
-    let mut rank: i32 = 7;
-    let mut file: i32 = 0;
-    for ch in parts[0].chars() {
-        match ch {
-            '/' => {
-                rank -= 1;
-                file = 0;
-            }
-            '1'..='8' => {
-                file += ch as i32 - '0' as i32;
-            }
-            _ => {
-                let piece = Piece::from_fen_char(ch)
-                    .ok_or_else(|| ChessError::new(format!("Unknown FEN char: '{ch}'")))?;
-                if rank < 0 || file > 7 {
-                    return Err(ChessError::new("FEN piece placement out of bounds"));
-                }
-                squares[(rank * 8 + file) as usize] = Some(piece);
-                file += 1;
-            }
-        }
     }
 
     // Side to move
@@ -66,24 +46,44 @@ pub fn parse_fen(fen: &str) -> ChessResult<Board> {
         ),
     };
 
-    let halfmove_clock = parts
-        .get(4)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0u32);
+    let halfmove_clock = parts.get(4).and_then(|s| s.parse().ok()).unwrap_or(0u32);
+    let fullmove_number = parts.get(5).and_then(|s| s.parse().ok()).unwrap_or(1u32);
 
-    let fullmove_number = parts
-        .get(5)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(1u32);
-
-    Ok(Board {
-        squares,
+    // Build an empty board with all metadata set, then populate bitboards.
+    let mut board = Board {
+        bb: [[0u64; 6]; 2],
         side_to_move,
         castling_rights,
         en_passant,
         halfmove_clock,
         fullmove_number,
-    })
+    };
+
+    // Piece placement — FEN lists rank 8 first, rank 1 last.
+    let mut rank: i32 = 7;
+    let mut file: i32 = 0;
+    for ch in parts[0].chars() {
+        match ch {
+            '/' => {
+                rank -= 1;
+                file = 0;
+            }
+            '1'..='8' => {
+                file += ch as i32 - '0' as i32;
+            }
+            _ => {
+                let piece = Piece::from_fen_char(ch)
+                    .ok_or_else(|| ChessError::new(format!("Unknown FEN char: '{ch}'")))?;
+                if rank < 0 || file > 7 {
+                    return Err(ChessError::new("FEN piece placement out of bounds"));
+                }
+                board.set_piece((rank * 8 + file) as Square, Some(piece));
+                file += 1;
+            }
+        }
+    }
+
+    Ok(board)
 }
 
 /// Serialises a `Board` to a complete FEN string.
