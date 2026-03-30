@@ -151,6 +151,11 @@ impl Board {
     }
 
     /// Clears all bitboards at `sq`.
+    ///
+    /// We scan all 12 BBs unconditionally rather than calling `piece_at` first —
+    /// both approaches are O(12), but the branchless AND-mask loop avoids the
+    /// early-return overhead and is friendlier to the branch predictor on the
+    /// hot path (e.g. inside `set_piece` during FEN parsing or move application).
     #[inline]
     pub(crate) fn clear_square(&mut self, sq: Square) {
         let mask = !(1u64 << sq);
