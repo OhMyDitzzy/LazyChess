@@ -66,8 +66,8 @@ pub fn get_unsafe_pieces(
     let captured_value = last_move_captured_value.unwrap_or(0);
 
     board
-        .squares
-        .iter()
+        .squares()
+        .into_iter()
         .enumerate()
         .filter_map(|(sq, cell)| {
             let piece = cell.filter(|p| {

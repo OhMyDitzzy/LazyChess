@@ -1,286 +1,216 @@
 use crate::board::Board;
 use crate::types::*;
 
-const KNIGHT_DIRS: [(i32, i32); 8] = [
-    (-2, -1), (-2, 1), (-1, -2), (-1, 2),
-    (1, -2),  (1, 2),  (2, -1),  (2, 1),
-];
+const FILE_A: u64 = 0x0101010101010101;
+const FILE_H: u64 = 0x8080808080808080;
 
-const KING_DIRS: [(i32, i32); 8] = [
-    (-1, -1), (-1, 0), (-1, 1),
-    (0, -1),           (0, 1),
-    (1, -1),  (1, 0),  (1, 1),
-];
+const RANK_1: u64 = 0x00000000000000FF;
+const RANK_3: u64 = 0x0000000000FF0000;
+const RANK_6: u64 = 0x0000FF0000000000;
+const RANK_8: u64 = 0xFF00000000000000;
 
-const BISHOP_DIRS: [(i32, i32); 4] = [(-1, -1), (-1, 1), (1, -1), (1, 1)];
-const ROOK_DIRS: [(i32, i32); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
-
-#[inline(always)]
-fn to_sq(rank: i32, file: i32) -> Option<Square> {
-    if (0..8).contains(&rank) && (0..8).contains(&file) {
-        Some((rank * 8 + file) as Square)
-    } else {
-        None
-    }
-}
-
-/// Generates all pseudo-legal moves for the side to move.
+/// Computes knight attack squares for a given square at compile time.
 ///
-/// *Pseudo-legal* means moves that respect each piece's movement rules but may
-/// leave the king in check. Filtering for full legality is done in
-/// [`generate_legal_moves`].
-pub fn generate_pseudo_legal_moves(board: &Board) -> Vec<Move> {
-    let mut moves: Vec<Move> = Vec::with_capacity(48);
-    for sq in 0u8..64 {
-        if let Some(p) = board.piece_at(sq)
-            && p.color == board.side_to_move {
-                match p.piece_type {
-                    PieceType::Pawn => gen_pawn_moves(board, sq, &mut moves),
-                    PieceType::Knight => gen_knight_moves(board, sq, &mut moves),
-                    PieceType::Bishop => gen_sliding(board, sq, &BISHOP_DIRS, &mut moves),
-                    PieceType::Rook => gen_sliding(board, sq, &ROOK_DIRS, &mut moves),
-                    PieceType::Queen => {
-                        gen_sliding(board, sq, &BISHOP_DIRS, &mut moves);
-                        gen_sliding(board, sq, &ROOK_DIRS, &mut moves);
-                    }
-                    PieceType::King => gen_king_moves(board, sq, &mut moves),
-                }
-            }
+/// Used to populate the `KNIGHT_ATTACKS` static table; not called at runtime.
+const fn knight_attacks_sq(sq: u8) -> u64 {
+    let r = (sq / 8) as i32;
+    let f = (sq % 8) as i32;
+    let mut bb: u64 = 0;
+    if r + 2 < 8 && f + 1 < 8 {
+        bb |= 1u64 << ((r + 2) * 8 + f + 1) as u32;
     }
-    moves
+    if r + 2 < 8 && f > 0 {
+        bb |= 1u64 << ((r + 2) * 8 + f - 1) as u32;
+    }
+    if r - 2 >= 0 && f + 1 < 8 {
+        bb |= 1u64 << ((r - 2) * 8 + f + 1) as u32;
+    }
+    if r - 2 >= 0 && f > 0 {
+        bb |= 1u64 << ((r - 2) * 8 + f - 1) as u32;
+    }
+    if r + 1 < 8 && f + 2 < 8 {
+        bb |= 1u64 << ((r + 1) * 8 + f + 2) as u32;
+    }
+    if r + 1 < 8 && f - 2 >= 0 {
+        bb |= 1u64 << ((r + 1) * 8 + f - 2) as u32;
+    }
+    if r > 0 && f + 2 < 8 {
+        bb |= 1u64 << ((r - 1) * 8 + f + 2) as u32;
+    }
+    if r > 0 && f - 2 >= 0 {
+        bb |= 1u64 << ((r - 1) * 8 + f - 2) as u32;
+    }
+    bb
 }
 
-fn gen_pawn_moves(board: &Board, from: Square, moves: &mut Vec<Move>) {
-    let color = board.side_to_move;
-    let rank = rank_of(from) as i32;
-    let file = file_of(from) as i32;
-
-    // White pawns advance upward (+1 rank); Black advance downward (-1 rank).
-    let (dir, start_rank, promo_rank) = match color {
-        Color::White => (1i32, 1i32, 6i32),
-        Color::Black => (-1i32, 6i32, 1i32),
-    };
-
-    let target_rank = rank + dir;
-
-    // Single-square push
-    if let Some(to) = to_sq(target_rank, file)
-        && board.piece_at(to).is_none() {
-            if rank == promo_rank {
-                push_promotions(from, to, moves);
-            } else {
-                moves.push(Move::new(from, to));
-
-                // Double push from the starting rank
-                if rank == start_rank
-                    && let Some(to2) = to_sq(rank + 2 * dir, file)
-                        && board.piece_at(to2).is_none() {
-                            moves.push(Move::with_flag(from, to2, MoveFlag::DoublePawnPush));
-                        }
-            }
-        }
-
-    // Diagonal captures (including en passant)
-    for &df in &[-1i32, 1i32] {
-        if let Some(to) = to_sq(target_rank, file + df) {
-            let is_ep = board.en_passant == Some(to);
-            let has_enemy = board
-                .piece_at(to)
-                .map(|p| p.color != color)
-                .unwrap_or(false);
-
-            if has_enemy || is_ep {
-                if rank == promo_rank {
-                    push_promotions(from, to, moves);
-                } else if is_ep {
-                    moves.push(Move::with_flag(from, to, MoveFlag::EnPassant));
-                } else {
-                    moves.push(Move::new(from, to));
-                }
-            }
-        }
+/// Computes king attack squares for a given square at compile time.
+///
+/// Used to populate the `KING_ATTACKS` static table; not called at runtime.
+const fn king_attacks_sq(sq: u8) -> u64 {
+    let r = (sq / 8) as i32;
+    let f = (sq % 8) as i32;
+    let mut bb: u64 = 0;
+    if r + 1 < 8 && f > 0 {
+        bb |= 1u64 << ((r + 1) * 8 + f - 1) as u32;
     }
+    if r + 1 < 8 {
+        bb |= 1u64 << ((r + 1) * 8 + f) as u32;
+    }
+    if r + 1 < 8 && f + 1 < 8 {
+        bb |= 1u64 << ((r + 1) * 8 + f + 1) as u32;
+    }
+    if f > 0 {
+        bb |= 1u64 << (r * 8 + f - 1) as u32;
+    }
+    if f + 1 < 8 {
+        bb |= 1u64 << (r * 8 + f + 1) as u32;
+    }
+    if r > 0 && f > 0 {
+        bb |= 1u64 << ((r - 1) * 8 + f - 1) as u32;
+    }
+    if r > 0 {
+        bb |= 1u64 << ((r - 1) * 8 + f) as u32;
+    }
+    if r > 0 && f + 1 < 8 {
+        bb |= 1u64 << ((r - 1) * 8 + f + 1) as u32;
+    }
+    bb
 }
 
-/// Pushes all four promotion variants (Q, R, B, N) onto the move list.
+static KNIGHT_ATTACKS: [u64; 64] = {
+    let mut t = [0u64; 64];
+    let mut i = 0u8;
+    while i < 64 {
+        t[i as usize] = knight_attacks_sq(i);
+        i += 1;
+    }
+    t
+};
+
+static KING_ATTACKS: [u64; 64] = {
+    let mut t = [0u64; 64];
+    let mut i = 0u8;
+    while i < 64 {
+        t[i as usize] = king_attacks_sq(i);
+        i += 1;
+    }
+    t
+};
+
+/// All squares attacked by white pawns on `pawns`.
+///
+/// << 9 with !FILE_A: northeast diagonal — we mask FILE_A because an h-file
+/// pawn shifted left by 9 would wrap around to the a-file of the next rank.
+/// << 7 with !FILE_H: northwest diagonal — same idea but for the a-file pawn
+/// wrapping to h-file.
+#[inline(always)]
+fn white_pawn_attacks(pawns: u64) -> u64 {
+    ((pawns << 9) & !FILE_A) | ((pawns << 7) & !FILE_H)
+}
+
+/// All squares attacked by black pawns on `pawns`.
+///
+/// >> 7 with !FILE_A: southeast diagonal (toward h-file from black's POV).
+/// >> 9 with !FILE_H: southwest diagonal. Same wrap-around logic as white.
+#[inline(always)]
+fn black_pawn_attacks(pawns: u64) -> u64 {
+    ((pawns >> 7) & !FILE_A) | ((pawns >> 9) & !FILE_H)
+}
+
+/// Classical ray-casting rook attacks from `sq` against the given occupancy.
+///
+/// Slides outward in all four orthogonal directions, stopping at (and
+/// including) the first occupied square in each direction.
 #[inline]
-fn push_promotions(from: Square, to: Square, moves: &mut Vec<Move>) {
-    for &pt in &[
-        PieceType::Queen,
-        PieceType::Rook,
-        PieceType::Bishop,
-        PieceType::Knight,
-    ] {
-        moves.push(Move::with_flag(from, to, MoveFlag::Promotion(pt)));
-    }
-}
+fn rook_attacks(sq: Square, occupied: u64) -> u64 {
+    let mut attacks = 0u64;
+    let rank = (sq / 8) as i32;
+    let file = (sq % 8) as i32;
 
-fn gen_knight_moves(board: &Board, from: Square, moves: &mut Vec<Move>) {
-    let color = board.side_to_move;
-    let rank = rank_of(from) as i32;
-    let file = file_of(from) as i32;
-
-    for &(dr, df) in &KNIGHT_DIRS {
-        if let Some(to) = to_sq(rank + dr, file + df)
-            && board.piece_at(to).map(|p| p.color != color).unwrap_or(true) {
-                moves.push(Move::new(from, to));
-            }
-    }
-}
-
-fn gen_sliding(board: &Board, from: Square, dirs: &[(i32, i32)], moves: &mut Vec<Move>) {
-    let color = board.side_to_move;
-    let rank = rank_of(from) as i32;
-    let file = file_of(from) as i32;
-
-    for &(dr, df) in dirs {
-        let (mut r, mut f) = (rank + dr, file + df);
-        while (0..8).contains(&r) && (0..8).contains(&f) {
-            let to = (r * 8 + f) as Square;
-            match board.piece_at(to) {
-                None => moves.push(Move::new(from, to)),
-                Some(p) => {
-                    if p.color != color {
-                        moves.push(Move::new(from, to));
-                    }
+    macro_rules! ray {
+        ($dr:expr, $df:expr) => {{
+            let (mut r, mut f) = (rank + $dr, file + $df);
+            while (0..8).contains(&r) && (0..8).contains(&f) {
+                let bit = 1u64 << (r * 8 + f);
+                attacks |= bit;
+                if occupied & bit != 0 {
                     break;
                 }
+                r += $dr;
+                f += $df;
             }
-            r += dr;
-            f += df;
-        }
+        }};
     }
+    ray!(1, 0);
+    ray!(-1, 0);
+    ray!(0, 1);
+    ray!(0, -1);
+    attacks
 }
 
-fn gen_king_moves(board: &Board, from: Square, moves: &mut Vec<Move>) {
-    let color = board.side_to_move;
-    let rank = rank_of(from) as i32;
-    let file = file_of(from) as i32;
+/// Classical ray-casting bishop attacks from `sq` against the given occupancy.
+///
+/// Slides outward in all four diagonal directions, stopping at (and
+/// including) the first occupied square in each direction.
+#[inline]
+fn bishop_attacks(sq: Square, occupied: u64) -> u64 {
+    let mut attacks = 0u64;
+    let rank = (sq / 8) as i32;
+    let file = (sq % 8) as i32;
 
-    for &(dr, df) in &KING_DIRS {
-        if let Some(to) = to_sq(rank + dr, file + df)
-            && board.piece_at(to).map(|p| p.color != color).unwrap_or(true) {
-                moves.push(Move::new(from, to));
+    macro_rules! ray {
+        ($dr:expr, $df:expr) => {{
+            let (mut r, mut f) = (rank + $dr, file + $df);
+            while (0..8).contains(&r) && (0..8).contains(&f) {
+                let bit = 1u64 << (r * 8 + f);
+                attacks |= bit;
+                if occupied & bit != 0 {
+                    break;
+                }
+                r += $dr;
+                f += $df;
             }
+        }};
     }
-
-    gen_castling(board, from, color, moves);
-}
-
-fn gen_castling(board: &Board, king_sq: Square, color: Color, moves: &mut Vec<Move>) {
-    match color {
-        Color::White => {
-            if king_sq != 4 {
-                return; // King not on e1; castling rights are meaningless.
-            }
-            if board.castling_rights.white_kingside
-                && board.piece_at(5).is_none()
-                && board.piece_at(6).is_none()
-            {
-                moves.push(Move::with_flag(4, 6, MoveFlag::CastleKingside));
-            }
-            if board.castling_rights.white_queenside
-                && board.piece_at(1).is_none()
-                && board.piece_at(2).is_none()
-                && board.piece_at(3).is_none()
-            {
-                moves.push(Move::with_flag(4, 2, MoveFlag::CastleQueenside));
-            }
-        }
-        Color::Black => {
-            if king_sq != 60 {
-                return;
-            }
-            if board.castling_rights.black_kingside
-                && board.piece_at(61).is_none()
-                && board.piece_at(62).is_none()
-            {
-                moves.push(Move::with_flag(60, 62, MoveFlag::CastleKingside));
-            }
-            if board.castling_rights.black_queenside
-                && board.piece_at(57).is_none()
-                && board.piece_at(58).is_none()
-                && board.piece_at(59).is_none()
-            {
-                moves.push(Move::with_flag(60, 58, MoveFlag::CastleQueenside));
-            }
-        }
-    }
+    ray!(1, 1);
+    ray!(1, -1);
+    ray!(-1, 1);
+    ray!(-1, -1);
+    attacks
 }
 
 /// Returns `true` if `sq` is attacked by any piece belonging to `by_color`.
 pub fn is_square_attacked(board: &Board, sq: Square, by_color: Color) -> bool {
-    let rank = rank_of(sq) as i32;
-    let file = file_of(sq) as i32;
+    let occ = board.all_occupancy();
+    let bi = by_color.index();
 
-    // Knight attacks
-    for &(dr, df) in &KNIGHT_DIRS {
-        if let Some(from) = to_sq(rank + dr, file + df)
-            && matches!(board.piece_at(from),
-                Some(Piece { piece_type: PieceType::Knight, color }) if color == by_color)
-            {
-                return true;
-            }
+    // Knights
+    if KNIGHT_ATTACKS[sq as usize] & board.bb[bi][PieceType::Knight.index()] != 0 {
+        return true;
     }
-
-    // King attacks (needed to prevent the king from walking into an adjacent king)
-    for &(dr, df) in &KING_DIRS {
-        if let Some(from) = to_sq(rank + dr, file + df)
-            && matches!(board.piece_at(from),
-                Some(Piece { piece_type: PieceType::King, color }) if color == by_color)
-            {
-                return true;
-            }
+    // King
+    if KING_ATTACKS[sq as usize] & board.bb[bi][PieceType::King.index()] != 0 {
+        return true;
     }
-
-    // Diagonal sliders (Bishop / Queen)
-    for &(dr, df) in &BISHOP_DIRS {
-        let (mut r, mut f) = (rank + dr, file + df);
-        while (0..8).contains(&r) && (0..8).contains(&f) {
-            if let Some(p) = board.piece_at((r * 8 + f) as Square) {
-                if p.color == by_color
-                    && (p.piece_type == PieceType::Bishop
-                        || p.piece_type == PieceType::Queen)
-                {
-                    return true;
-                }
-                break;
-            }
-            r += dr;
-            f += df;
-        }
+    // Diagonal sliders (bishop + queen)
+    let diag = board.bb[bi][PieceType::Bishop.index()] | board.bb[bi][PieceType::Queen.index()];
+    if bishop_attacks(sq, occ) & diag != 0 {
+        return true;
     }
-
-    // Straight sliders (Rook / Queen)
-    for &(dr, df) in &ROOK_DIRS {
-        let (mut r, mut f) = (rank + dr, file + df);
-        while (0..8).contains(&r) && (0..8).contains(&f) {
-            if let Some(p) = board.piece_at((r * 8 + f) as Square) {
-                if p.color == by_color
-                    && (p.piece_type == PieceType::Rook || p.piece_type == PieceType::Queen)
-                {
-                    return true;
-                }
-                break;
-            }
-            r += dr;
-            f += df;
-        }
+    // Straight sliders (rook + queen)
+    let straight = board.bb[bi][PieceType::Rook.index()] | board.bb[bi][PieceType::Queen.index()];
+    if rook_attacks(sq, occ) & straight != 0 {
+        return true;
     }
-
-    // Pawn attacks – a pawn of `by_color` attacks diagonally *forward* from its
-    // own perspective, which is *backward* from the target square's perspective.
-    let pawn_dir: i32 = match by_color {
-        Color::White => -1, // White pawns stand below the target square.
-        Color::Black => 1,
+    // Pawns — we ask "which squares does a `by_color` pawn attack?" and check
+    // whether `sq` is one of them.
+    let their_pawns = board.bb[bi][PieceType::Pawn.index()];
+    let pawn_atk = match by_color {
+        Color::White => white_pawn_attacks(their_pawns),
+        Color::Black => black_pawn_attacks(their_pawns),
     };
-    for &df in &[-1i32, 1i32] {
-        if let Some(from) = to_sq(rank + pawn_dir, file + df)
-            && matches!(board.piece_at(from),
-                Some(Piece { piece_type: PieceType::Pawn, color }) if color == by_color)
-            {
-                return true;
-            }
+    if pawn_atk & (1u64 << sq) != 0 {
+        return true;
     }
 
     false
@@ -294,96 +224,405 @@ pub fn is_in_check(board: &Board, color: Color) -> bool {
         .unwrap_or(false)
 }
 
+/// Pushes all four promotion variants (Q, R, B, N) for a pawn moving
+/// from `from` to `to` onto `moves`.
+#[inline]
+fn push_promotions(from: Square, to: Square, moves: &mut Vec<Move>) {
+    for &pt in &[
+        PieceType::Queen,
+        PieceType::Rook,
+        PieceType::Bishop,
+        PieceType::Knight,
+    ] {
+        moves.push(Move::with_flag(from, to, MoveFlag::Promotion(pt)));
+    }
+}
+
+/// Expands a target bitboard into individual `Move` entries appended to `moves`.
+///
+/// Despite the general name, callers pass `targets & not_our` — meaning this
+/// handles both quiet moves and captures in one shot. Separating them here
+/// would require two loops over the same bitboard for no speed benefit, since
+/// move legality is checked later in `generate_legal_moves` anyway.
+#[inline]
+fn add_moves(from: Square, mut targets: u64, moves: &mut Vec<Move>) {
+    while targets != 0 {
+        let to = targets.trailing_zeros() as Square;
+        targets &= targets - 1;
+        moves.push(Move::new(from, to));
+    }
+}
+
+/// Generates all pseudo-legal pawn moves for `us` and appends them to `moves`.
+///
+/// Covers single and double pushes, diagonal captures, en-passant captures,
+/// and all promotion variants for both colours.
+fn gen_pawn_moves(board: &Board, us: Color, their: u64, empty: u64, moves: &mut Vec<Move>) {
+    let pawns = board.piece_bb(us, PieceType::Pawn);
+    let ep_bit = board.en_passant.map_or(0u64, |sq| 1u64 << sq);
+
+    // we include the ep square in capture targets so the bitboard shift
+    // naturally lands on it without a separate special-case branch below.
+    let captures_to = their | ep_bit;
+
+    match us {
+        Color::White => {
+            let single = (pawns << 8) & empty;
+            let double = ((single & RANK_3) << 8) & empty;
+            let cap_r = (pawns << 9) & !FILE_A & captures_to;
+            let cap_l = (pawns << 7) & !FILE_H & captures_to;
+
+            // Single pushes (non-promo)
+            let mut bb = single & !RANK_8;
+            while bb != 0 {
+                let to = bb.trailing_zeros() as Square;
+                bb &= bb - 1;
+                moves.push(Move::new(to - 8, to));
+            }
+            // Double pushes
+            let mut bb = double;
+            while bb != 0 {
+                let to = bb.trailing_zeros() as Square;
+                bb &= bb - 1;
+                moves.push(Move::with_flag(to - 16, to, MoveFlag::DoublePawnPush));
+            }
+            // Promotions (push)
+            let mut bb = single & RANK_8;
+            while bb != 0 {
+                let to = bb.trailing_zeros() as Square;
+                bb &= bb - 1;
+                push_promotions(to - 8, to, moves);
+            }
+            // Captures right (non-promo)
+            let mut bb = cap_r & !RANK_8;
+            while bb != 0 {
+                let to = bb.trailing_zeros() as Square;
+                bb &= bb - 1;
+                let from = to - 9;
+                // ep_bit >> to isolates the ep bit relative to `to`; it is 1
+                // iff `to` is exactly the en-passant square.
+                if ep_bit >> to & 1 != 0 {
+                    moves.push(Move::with_flag(from, to, MoveFlag::EnPassant));
+                } else {
+                    moves.push(Move::new(from, to));
+                }
+            }
+            // Captures left (non-promo)
+            let mut bb = cap_l & !RANK_8;
+            while bb != 0 {
+                let to = bb.trailing_zeros() as Square;
+                bb &= bb - 1;
+                let from = to - 7;
+                if ep_bit >> to & 1 != 0 {
+                    moves.push(Move::with_flag(from, to, MoveFlag::EnPassant));
+                } else {
+                    moves.push(Move::new(from, to));
+                }
+            }
+            // Promo captures right
+            let mut bb = cap_r & RANK_8;
+            while bb != 0 {
+                let to = bb.trailing_zeros() as Square;
+                bb &= bb - 1;
+                push_promotions(to - 9, to, moves);
+            }
+            // Promo captures left
+            let mut bb = cap_l & RANK_8;
+            while bb != 0 {
+                let to = bb.trailing_zeros() as Square;
+                bb &= bb - 1;
+                push_promotions(to - 7, to, moves);
+            }
+        }
+
+        Color::Black => {
+            let single = (pawns >> 8) & empty;
+            let double = ((single & RANK_6) >> 8) & empty;
+            let cap_r = (pawns >> 7) & !FILE_A & captures_to;
+            let cap_l = (pawns >> 9) & !FILE_H & captures_to;
+
+            // Single pushes (non-promo)
+            let mut bb = single & !RANK_1;
+            while bb != 0 {
+                let to = bb.trailing_zeros() as Square;
+                bb &= bb - 1;
+                moves.push(Move::new(to + 8, to));
+            }
+            // Double pushes
+            let mut bb = double;
+            while bb != 0 {
+                let to = bb.trailing_zeros() as Square;
+                bb &= bb - 1;
+                moves.push(Move::with_flag(to + 16, to, MoveFlag::DoublePawnPush));
+            }
+            // Promotions (push)
+            let mut bb = single & RANK_1;
+            while bb != 0 {
+                let to = bb.trailing_zeros() as Square;
+                bb &= bb - 1;
+                push_promotions(to + 8, to, moves);
+            }
+            // Captures right (non-promo) — toward a-file for black
+            let mut bb = cap_r & !RANK_1;
+            while bb != 0 {
+                let to = bb.trailing_zeros() as Square;
+                bb &= bb - 1;
+                let from = to + 7;
+                if ep_bit >> to & 1 != 0 {
+                    moves.push(Move::with_flag(from, to, MoveFlag::EnPassant));
+                } else {
+                    moves.push(Move::new(from, to));
+                }
+            }
+            // Captures left (non-promo) — toward h-file for black
+            let mut bb = cap_l & !RANK_1;
+            while bb != 0 {
+                let to = bb.trailing_zeros() as Square;
+                bb &= bb - 1;
+                let from = to + 9;
+                if ep_bit >> to & 1 != 0 {
+                    moves.push(Move::with_flag(from, to, MoveFlag::EnPassant));
+                } else {
+                    moves.push(Move::new(from, to));
+                }
+            }
+            // Promo captures right
+            let mut bb = cap_r & RANK_1;
+            while bb != 0 {
+                let to = bb.trailing_zeros() as Square;
+                bb &= bb - 1;
+                push_promotions(to + 7, to, moves);
+            }
+            // Promo captures left
+            let mut bb = cap_l & RANK_1;
+            while bb != 0 {
+                let to = bb.trailing_zeros() as Square;
+                bb &= bb - 1;
+                push_promotions(to + 9, to, moves);
+            }
+        }
+    }
+}
+
+/// Appends castling moves for `color` if the rights and vacancy conditions are
+/// met.
+///
+/// Does **not** check whether the king passes through check — that is deferred
+/// to [`generate_legal_moves`].
+fn gen_castling(board: &Board, king_sq: Square, color: Color, moves: &mut Vec<Move>) {
+    let occ = board.all_occupancy();
+    match color {
+        Color::White => {
+            if king_sq != 4 {
+                return;
+            }
+            // f1 (5), g1 (6) must be empty
+            if board.castling_rights.white_kingside && occ & 0x0000000000000060 == 0 {
+                moves.push(Move::with_flag(4, 6, MoveFlag::CastleKingside));
+            }
+            // b1 (1), c1 (2), d1 (3) must be empty
+            if board.castling_rights.white_queenside && occ & 0x000000000000000E == 0 {
+                moves.push(Move::with_flag(4, 2, MoveFlag::CastleQueenside));
+            }
+        }
+        Color::Black => {
+            if king_sq != 60 {
+                return;
+            }
+            // f8 (61), g8 (62) must be empty
+            if board.castling_rights.black_kingside && occ & 0x6000000000000000 == 0 {
+                moves.push(Move::with_flag(60, 62, MoveFlag::CastleKingside));
+            }
+            // b8 (57), c8 (58), d8 (59) must be empty
+            if board.castling_rights.black_queenside && occ & 0x0E00000000000000 == 0 {
+                moves.push(Move::with_flag(60, 58, MoveFlag::CastleQueenside));
+            }
+        }
+    }
+}
+
+/// Generates all pseudo-legal moves for the side to move.
+///
+/// *Pseudo-legal* means moves that respect each piece's movement rules but may
+/// leave the king in check. Filtering for full legality is done in
+/// [`generate_legal_moves`].
+pub fn generate_pseudo_legal_moves(board: &Board) -> Vec<Move> {
+    let mut moves: Vec<Move> = Vec::with_capacity(48);
+    let us = board.side_to_move;
+    let occ = board.all_occupancy();
+    let our = board.occupancy(us);
+    let their = board.occupancy(us.opposite());
+    let empty = !occ;
+    let not_our = !our;
+
+    gen_pawn_moves(board, us, their, empty, &mut moves);
+
+    // Knights
+    let mut bb = board.piece_bb(us, PieceType::Knight);
+    while bb != 0 {
+        let from = bb.trailing_zeros() as Square;
+        bb &= bb - 1;
+        // not_our includes enemy squares, so this naturally generates captures too.
+        add_moves(from, KNIGHT_ATTACKS[from as usize] & not_our, &mut moves);
+    }
+
+    // Bishops
+    let mut bb = board.piece_bb(us, PieceType::Bishop);
+    while bb != 0 {
+        let from = bb.trailing_zeros() as Square;
+        bb &= bb - 1;
+        add_moves(from, bishop_attacks(from, occ) & not_our, &mut moves);
+    }
+
+    // Rooks
+    let mut bb = board.piece_bb(us, PieceType::Rook);
+    while bb != 0 {
+        let from = bb.trailing_zeros() as Square;
+        bb &= bb - 1;
+        add_moves(from, rook_attacks(from, occ) & not_our, &mut moves);
+    }
+
+    // Queens
+    let mut bb = board.piece_bb(us, PieceType::Queen);
+    while bb != 0 {
+        let from = bb.trailing_zeros() as Square;
+        bb &= bb - 1;
+        let atk = (bishop_attacks(from, occ) | rook_attacks(from, occ)) & not_our;
+        add_moves(from, atk, &mut moves);
+    }
+
+    // King
+    let king_sq = board.king_square(us).unwrap_or(64);
+    if king_sq < 64 {
+        add_moves(
+            king_sq,
+            KING_ATTACKS[king_sq as usize] & not_our,
+            &mut moves,
+        );
+        gen_castling(board, king_sq, us, &mut moves);
+    }
+
+    moves
+}
+
 /// Applies `mv` to `board` and returns the resulting board state.
 ///
-/// The caller must ensure `mv` was generated from `board`; applying an
-/// arbitrary move to a mismatched board is undefined behaviour.
+/// All bitboard updates (captures, castling rook moves, en-passant removal,
+/// promotions, castling-rights stripping) are handled here on the hot path
+/// without any `piece_at` lookups.
 pub fn apply_move(board: &Board, mv: &Move) -> Board {
     let mut nb = board.clone();
-    let piece = nb
-        .take_piece(mv.from)
-        .expect("apply_move: no piece at the from square");
+    let us = board.side_to_move;
+    let them = us.opposite();
+    let ui = us.index();
+    let ti = them.index();
+    let bit_from = 1u64 << mv.from;
+    let bit_to = 1u64 << mv.to;
+
+    // Identify the moving piece type (O(6), us only).
+    let mut pt_idx = 0usize;
+    for pi in 0..6usize {
+        if nb.bb[ui][pi] & bit_from != 0 {
+            pt_idx = pi;
+            break;
+        }
+    }
+    let pt = PieceType::from_index(pt_idx);
 
     // Half-move clock: reset on pawn moves or captures.
     let is_capture =
-        board.piece_at(mv.to).is_some() || mv.flag == MoveFlag::EnPassant;
-    if is_capture || piece.piece_type == PieceType::Pawn {
+        board.bb[ti].iter().any(|&bb| bb & bit_to != 0) || mv.flag == MoveFlag::EnPassant;
+    if is_capture || pt == PieceType::Pawn {
         nb.halfmove_clock = 0;
     } else {
         nb.halfmove_clock += 1;
     }
 
-    // En passant target square is valid only immediately after a double pawn push.
+    // En passant target (only valid for double pawn pushes).
     nb.en_passant = if mv.flag == MoveFlag::DoublePawnPush {
-        let ep_rank = if piece.color == Color::White {
-            rank_of(mv.from) + 1
+        Some(if us == Color::White {
+            mv.to - 8
         } else {
-            rank_of(mv.from) - 1
-        };
-        Some(make_square(file_of(mv.from), ep_rank))
+            mv.to + 8
+        })
     } else {
         None
     };
 
-    // Handle move-specific side effects before placing the piece.
+    // Remove the moving piece from its source square.
+    nb.bb[ui][pt_idx] &= !bit_from;
+
     match &mv.flag {
         MoveFlag::EnPassant => {
-            // The captured pawn sits on the same rank as the capturing pawn
-            // but on the file of the destination square.
-            let captured_sq = make_square(file_of(mv.to), rank_of(mv.from));
-            nb.take_piece(captured_sq);
+            // The captured pawn is not at mv.to but one rank behind it.
+            let cap_sq = if us == Color::White {
+                mv.to - 8
+            } else {
+                mv.to + 8
+            };
+            nb.bb[ti][PieceType::Pawn.index()] &= !(1u64 << cap_sq);
+            nb.bb[ui][pt_idx] |= bit_to;
         }
 
         MoveFlag::CastleKingside => {
-            // Move the rook; the king will be placed below.
-            let (rook_from, rook_to) = match piece.color {
-                Color::White => (7u8, 5u8),  // h1 → f1
-                Color::Black => (63u8, 61u8), // h8 → f8
+            let (rook_from, rook_to) = match us {
+                Color::White => (7u8, 5u8),
+                Color::Black => (63u8, 61u8),
             };
-            let rook = nb.take_piece(rook_from);
-            nb.set_piece(rook_to, rook);
+            nb.bb[ui][PieceType::Rook.index()] ^= (1u64 << rook_from) | (1u64 << rook_to);
+            // we don't need to clear enemy pieces at bit_to here — castling
+            // is only generated when the transit and destination squares are
+            // empty, so there is nothing to capture.
+            nb.bb[ui][pt_idx] |= bit_to;
         }
 
         MoveFlag::CastleQueenside => {
-            let (rook_from, rook_to) = match piece.color {
-                Color::White => (0u8, 3u8),  // a1 → d1
-                Color::Black => (56u8, 59u8), // a8 → d8
+            let (rook_from, rook_to) = match us {
+                Color::White => (0u8, 3u8),
+                Color::Black => (56u8, 59u8),
             };
-            let rook = nb.take_piece(rook_from);
-            nb.set_piece(rook_to, rook);
+            nb.bb[ui][PieceType::Rook.index()] ^= (1u64 << rook_from) | (1u64 << rook_to);
+            // same reasoning as CastleKingside above.
+            nb.bb[ui][pt_idx] |= bit_to;
         }
 
         MoveFlag::Promotion(promo_type) => {
-            // Place the promoted piece (overwrites any captured piece at `to`).
+            // Clear any captured enemy piece at the destination.
+            for pi in 0..6usize {
+                nb.bb[ti][pi] &= !bit_to;
+            }
             strip_castling_on_capture(&mut nb, mv.to);
-            nb.set_piece(mv.to, Some(Piece::new(*promo_type, piece.color)));
-            nb.side_to_move = piece.color.opposite();
-            if piece.color == Color::Black {
+            // Place promoted piece (not the original pawn type).
+            nb.bb[ui][promo_type.index()] |= bit_to;
+            // pt is Pawn here, so strip_castling_on_move is a no-op — but we
+            // call it anyway for consistency in case pt ever changes.
+            strip_castling_on_move(&mut nb, mv.from, pt, us);
+            nb.side_to_move = them;
+            if us == Color::Black {
                 nb.fullmove_number += 1;
             }
-            return nb; // Early return; castling-rights updates for pawn moves are no-ops.
+            return nb;
         }
 
         MoveFlag::Normal | MoveFlag::DoublePawnPush => {
+            // Clear any captured enemy piece.
+            for pi in 0..6usize {
+                nb.bb[ti][pi] &= !bit_to;
+            }
             strip_castling_on_capture(&mut nb, mv.to);
+            nb.bb[ui][pt_idx] |= bit_to;
         }
     }
 
-    // Place the moving piece at the destination.
-    nb.set_piece(mv.to, Some(piece));
-
-    // Update castling rights based on the piece that moved.
-    strip_castling_on_move(&mut nb, mv.from, piece);
-
-    nb.side_to_move = piece.color.opposite();
-    if piece.color == Color::Black {
+    strip_castling_on_move(&mut nb, mv.from, pt, us);
+    nb.side_to_move = them;
+    if us == Color::Black {
         nb.fullmove_number += 1;
     }
-
     nb
 }
 
-/// Revokes castling rights when a rook is captured on its home square.
+/// Revokes castling rights when a rook's starting square is captured.
 fn strip_castling_on_capture(board: &mut Board, to: Square) {
     match to {
         0 => board.castling_rights.white_queenside = false,
@@ -394,9 +633,14 @@ fn strip_castling_on_capture(board: &mut Board, to: Square) {
     }
 }
 
-/// Revokes castling rights when the king or a rook moves away from its home square.
-fn strip_castling_on_move(board: &mut Board, from: Square, piece: Piece) {
-    match (piece.color, piece.piece_type) {
+/// Revokes castling rights when a king or rook moves away from its home square.
+///
+/// We take `us` explicitly rather than reading `board.side_to_move` because
+/// at the call site `board.side_to_move` has not yet been flipped to `them`.
+/// Passing `us` makes the dependency clear and keeps this function safe to
+/// call at any point in `apply_move`, regardless of when the flip happens.
+fn strip_castling_on_move(board: &mut Board, from: Square, pt: PieceType, us: Color) {
+    match (us, pt) {
         (Color::White, PieceType::King) => {
             board.castling_rights.white_kingside = false;
             board.castling_rights.white_queenside = false;
@@ -425,14 +669,19 @@ fn strip_castling_on_move(board: &mut Board, from: Square, piece: Piece) {
 
 /// Generates all *legal* moves for the side to move.
 ///
-/// A move is legal when it does not leave the mover's king in check and, for
-/// castling, the king does not pass through or land on an attacked square.
+/// Filters the pseudo-legal move list by:
+/// - Rejecting moves that leave the king in check.
+/// - For castling, additionally verifying the king does not start in check and
+///   does not pass through an attacked square.
+///
+/// Note: the destination square check for castling is covered by the final
+/// `!is_in_check` call — the king ends up there, so if it were attacked the
+/// check would be detected automatically.
 pub fn generate_legal_moves(board: &Board) -> Vec<Move> {
     let color = board.side_to_move;
     generate_pseudo_legal_moves(board)
         .into_iter()
         .filter(|mv| {
-            // Castling has additional constraints beyond the post-move check test.
             match mv.flag {
                 MoveFlag::CastleKingside => {
                     if is_in_check(board, color) {
@@ -454,8 +703,6 @@ pub fn generate_legal_moves(board: &Board) -> Vec<Move> {
                 }
                 _ => {}
             }
-
-            // The king must not be in check after the move is applied.
             let new_board = apply_move(board, mv);
             !is_in_check(&new_board, color)
         })
