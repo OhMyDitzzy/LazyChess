@@ -1,0 +1,52 @@
+name: Question
+description: Ask a question about usage, behavior, or the internals of LazyChess
+title: "[Question]: "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have a question? Feel free to ask — no question is too small. For quick questions you can also check the [docs on docs.rs](https://docs.rs/lazychess) or the [`examples/`](https://github.com/OhMyDitzzy/LazyChess/tree/main/examples) folder first.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: What would you like to know?
+      placeholder: |
+        e.g. How do I analyze only Black's moves and filter out anything better than an Inaccuracy?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Related component (optional)
+      options:
+        - Game / Board logic
+        - Move generation / validation
+        - FEN / PGN parsing
+        - Opening book
+        - UCI engine (UciEngine)
+        - Move Analyzer / Classification
+        - Pondering
+        - General / Other
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: What have you tried?
+      description: Share any code, docs you've read, or things you've already attempted. This helps us give a more targeted answer.
+      render: rust
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: LazyChess version (if relevant)
+      placeholder: e.g. 0.1.1
+    validations:
+      required: false

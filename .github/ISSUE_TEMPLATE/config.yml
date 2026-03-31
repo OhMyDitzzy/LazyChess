@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: docs.rs — LazyChess API Docs
+    url: https://docs.rs/lazychess
+    about: Full API reference generated from the source code.
+  - name: crates.io — LazyChess
+    url: https://crates.io/crates/lazychess
+    about: Latest release and version history.

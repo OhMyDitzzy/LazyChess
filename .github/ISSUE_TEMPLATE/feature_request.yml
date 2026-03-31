@@ -1,0 +1,75 @@
+name: Feature Request
+description: Suggest a new feature or improvement for LazyChess
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Got an idea that would make LazyChess better? We'd love to hear it! Please describe your suggestion clearly.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the use case or limitation that motivates this request. If it's not tied to a specific problem, just describe what you'd like to be able to do.
+      placeholder: |
+        e.g. There's no way to iterate over all legal moves for a given piece without manually filtering `get_legal_moves()`.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the feature or change you'd like to see. Feel free to sketch an API if you have one in mind.
+      render: rust
+      placeholder: |
+        // e.g. a new method on Game
+        game.legal_moves_from("e2") // -> Vec<Move>
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part of LazyChess would this feature belong to?
+      options:
+        - Game / Board logic
+        - Move generation / validation
+        - FEN / PGN parsing
+        - Opening book
+        - UCI engine (UciEngine)
+        - Move Analyzer / Classification
+        - Pondering
+        - New component / Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: How important is this to you?
+      options:
+        - Nice to have
+        - Would significantly improve my use case
+        - Blocking — I can't use LazyChess without this
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+      description: Have you found any workarounds, or are there existing APIs that partially address this?
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Any other details, links to relevant chess rules, or prior art from other libraries.
+    validations:
+      required: false

@@ -1,0 +1,17 @@
+name: Blank
+description: Open a blank issue — use this if none of the other templates fit
+title: ""
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is a blank template. Please give your issue a clear title and describe what you'd like to discuss.
+
+  - type: textarea
+    id: content
+    attributes:
+      label: Details
+      description: Describe your issue, suggestion, or anything else you'd like to share.
+    validations:
+      required: true

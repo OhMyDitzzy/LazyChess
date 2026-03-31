@@ -12,7 +12,7 @@
 
 ---
 
-LazyChess implements the full FIDE ruleset — castling, en passant, pawn promotion, and every draw condition — along with FEN/PGN serialisation, opening detection, and UCI engine communication.
+LazyChess is a fast and memory-efficient chess engine library. It offers full FIDE features like castling, en passant, and every draw detection. It also includes FEN/PGN serialization, opening detection, UCI Engine Communication, and analysis of every move with move classification analysis.
 
 > [!NOTE]
 > LazyChess is still in its early stages of development. Your feedback and suggestions are very helpful for this library! Don't hesitate to visit the issues page if you have any problems with LazyChess!
